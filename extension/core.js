@@ -43,6 +43,16 @@
     return Number.isSafeInteger(number) && number >= 0 ? number : null;
   }
 
+  function sourcePage(raw, base) {
+    const url = threadsUrl(raw, base);
+    if (!url) return null;
+    for (const name of [...url.searchParams.keys()]) {
+      if (/^utm_/i.test(name) || /^(?:xmt|igsh|igshid|fbclid|gclid)$/i.test(name)) url.searchParams.delete(name);
+    }
+    url.searchParams.sort();
+    return `${ORIGIN}${url.pathname}${url.search}${url.hash}`;
+  }
+
   function mergeAccounts(existingArray, incomingArray, nowISO) {
     const accounts = new Map();
     const now = typeof nowISO === "string" ? nowISO : "";
@@ -77,7 +87,7 @@
     return '"' + text.replace(/"/g, '""') + '"';
   }
 
-  const api = Object.freeze({ canonicalTarget, profileFromHref, normalizeCounts, mergeAccounts, csvCell });
+  const api = Object.freeze({ canonicalTarget, profileFromHref, normalizeCounts, sourcePage, mergeAccounts, csvCell });
   root.ThreadsProbeCore = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

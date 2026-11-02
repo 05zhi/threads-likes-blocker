@@ -94,6 +94,19 @@ test('feed-bound jobs pause on source navigation and require their original page
   assert.equal((await h.message({type:'BLOCK_RESUME',actorUsername:'me'},{tab:{id:7,url:target.url}})).ok,false);
   await h.message({type:'BLOCK_STOP'},feed);
 });
+
+test('search query changes invalidate card bindings while tracking parameters do not',async()=>{
+  const prepare=gate(),h=harness({adapter:()=>prepare.promise});await h.ready;
+  const search={tab:{id:7,url:'https://www.threads.com/search?q=one&xmt=share'}};
+  h.tabs.set(7,{...search.tab,status:'complete'});
+  assert.equal((await h.message({...initial(),target:{...target,binding:'user-confirmed',sourcePage:'https://threads.net/search?q=two'}},search)).ok,false);
+  assert.equal((await h.message({...initial(),target:{...target,binding:'user-confirmed',sourcePage:'https://www.threads.com/search?q=one'}},search)).ok,true);
+  await until(()=>h.phases().includes('prepare'),'search preparation');
+  h.listeners.updated(7,{url:'https://www.threads.com/search?q=one&xmt=other'});await tick();await tick();assert.equal(h.job().status,'running');
+  h.listeners.updated(7,{url:'https://www.threads.com/search?q=two'});await until(()=>h.job().status==='paused','semantic query pause');
+  prepare.resolve([{result:{status:'prepared',confirmationToken:'p'}}]);await until(()=>h.job().current===null,'query deferral');assert.deepEqual(h.phases(),['prepare']);
+  await h.message({type:'BLOCK_STOP'},search);
+});
 test('runner prepares before confirming and processes a selected account once',async()=>{
   const h=harness();await h.ready;assert.equal((await h.message({...initial(),accounts:[account('alice')]})).ok,true);
   await until(()=>h.job()?.status==='completed','completion');

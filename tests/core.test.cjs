@@ -7,6 +7,14 @@ const fs = require("node:fs");
 const path = require("node:path");
 const core = require("../extension/core.js");
 
+test("source pages preserve semantic query and hash while removing tracking", () => {
+  assert.equal(core.sourcePage('https://threads.net/search?utm_source=share&q=user1&xmt=token&sort=recent#results'), 'https://www.threads.com/search?q=user1&sort=recent#results');
+  assert.notEqual(core.sourcePage('https://www.threads.com/search?q=one'), core.sourcePage('https://www.threads.com/search?q=two'));
+  assert.equal(core.sourcePage('https://www.threads.com/search?sort=recent&q=user1'), core.sourcePage('https://threads.net/search?q=user1&sort=recent'));
+  assert.equal(core.sourcePage('https://evil.example/search?q=one'), null);
+  assert.equal(core.sourcePage('https://u:pw@threads.com/'), null);
+});
+
 test("exposes the same API in Node and a browser-like global", () => {
   assert.equal(globalThis.ThreadsProbeCore, core);
   const context = { URL };

@@ -14,8 +14,7 @@ function safeOrigin(raw) {
 function locked(task) { return task && (["running", "paused"].includes(task.status) || task.current != null); }
 function sameTarget(a, b) { return !!a && !!b && a.username.toLowerCase() === b.username.toLowerCase() && a.postId === b.postId; }
 function sourcePage(raw) {
-  if (!safeOrigin(raw)) return null;
-  return `https://www.threads.com${new URL(raw).pathname}`;
+  return Core.sourcePage(raw);
 }
 function sameSource(a, b) {
   const left = Core.canonicalTarget(a), right = Core.canonicalTarget(b);
