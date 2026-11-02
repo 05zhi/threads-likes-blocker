@@ -8,9 +8,9 @@ const root = path.resolve(__dirname, '..');
 const scratch = path.resolve(process.env.PROBE_TEST_WORK || path.join(process.cwd(), 'work', 'probe-browser-test'));
 const chromePath = process.env.CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe';
 const delay = ms => new Promise(r => setTimeout(r, ms));
-const fixture = `<!doctype html><meta charset="utf-8"><title>本機測試頁（不是 Threads）</title>
+const fixture = `<!doctype html><meta charset="utf-8"><title>本機測試頁（不是 Threads）</title><link rel="canonical" href="https://www.threads.com/@author/post/TEST">
 <style>body{font:16px system-ui;background:#edf1f7;padding:40px;margin-right:400px}#dialog{background:white;width:420px;padding:20px;border-radius:16px}#list{overflow-y:auto;height:180px;border:1px solid #ccc}.row{height:62px;padding:15px;border-bottom:1px solid #eee}a{color:#2455b5}</style>
-<h1>本機測試頁 · 非 Threads 實測</h1><p>以模擬名單驗證讀取、去重與中斷行為。</p><div role="dialog" id="dialog"><h2>按讚</h2><div role="list" id="list">
+<h1>本機測試頁 · 非 Threads 實測</h1><p>以模擬名單驗證讀取、去重與中斷行為。</p><article id="source-post"><a href="https://www.threads.com/@author/post/TEST"><time>剛剛</time></a><p id="source-body">目標貼文內容</p></article><div role="dialog" id="dialog"><h2>按讚</h2><div role="list" id="list">
 <div class="row"><a href="https://www.threads.com/@alice">Alice</a></div>
 <div class="row"><a href="https://www.threads.net/@BOB">Bob</a></div>
 <div class="row"><a href="https://www.threads.com/@Alice">Alice 重複</a></div>
@@ -82,20 +82,40 @@ class CDP {
     const click = id => cdp.eval(`${ui}.getElementById(${JSON.stringify(id)}).click()`);
     const status=()=>cdp.eval(`${ui}.getElementById('status').textContent`);
     const snapshot=()=>cdp.eval(`Object.values(__saved).find(x=>x?.mode==='read-only-probe')`);
+    await check('source is automatically read from canonical and is read-only without manual URL entry',async()=>{
+      assert.equal(await cdp.eval(`${ui}.getElementById('target').readOnly`),true);assert.equal(await cdp.eval(`${ui}.getElementById('target').value`),'https://www.threads.com/@author/post/TEST');assert.match(await cdp.eval(`${ui}.getElementById('sourceInfo').textContent`),/自動辨識 @author/);
+      assert.equal(await cdp.eval(`getComputedStyle(${ui}.querySelector('section:not([hidden])')).borderTopWidth`),'1px');
+    });
+    await check('feed card picking reads the clicked card timestamp and resets old approvals',async()=>{
+      await cdp.eval(`document.body.insertAdjacentHTML('beforeend','<article id="reply-card"><header><a href="https://www.threads.com/@writer/post/REPLY"><time>1分</time></a></header><p id="reply-body">選這則回覆</p></article>');${ui}.getElementById('includeAuthor').checked=true;${ui}.getElementById('blockConfirmed').checked=true`);
+      await click('pickTarget');await cdp.eval(`document.querySelector('#reply-body').click()`);
+      assert.equal(await cdp.eval(`${ui}.getElementById('target').value`),'https://www.threads.com/@writer/post/REPLY');assert.equal(await cdp.eval(`${ui}.getElementById('includeAuthor').checked`),false);assert.equal(await cdp.eval(`${ui}.getElementById('blockConfirmed').checked`),false);
+      await click('pickTarget');await cdp.eval(`document.querySelector('#source-body').click();document.querySelector('#reply-card').remove()`);assert.equal(await cdp.eval(`${ui}.getElementById('target').value`),'https://www.threads.com/@author/post/TEST');
+    });
+    await check('ambiguous cards do not guess a parent post or nested reply',async()=>{
+      await cdp.eval(`document.body.insertAdjacentHTML('beforeend','<article id="ambiguous-card"><a href="https://www.threads.com/@parent/post/ONE"><time>2分</time></a><p id="ambiguous-body">多個來源</p><article><a href="https://www.threads.com/@child/post/TWO"><time>1分</time></a></article></article>')`);
+      await click('pickTarget');await cdp.eval(`document.querySelector('#ambiguous-body').click()`);assert.match(await cdp.eval(`${ui}.getElementById('notice').textContent`),/未能唯一辨識/);assert.equal(await cdp.eval(`${ui}.getElementById('target').value`),'https://www.threads.com/@author/post/TEST');await click('cancelTarget');await cdp.eval(`document.querySelector('#ambiguous-card').remove()`);
+    });
     await check('source and scope confirmations required',async()=>{
-      await cdp.eval(`${ui}.getElementById('target').value='https://www.threads.com/@author/post/TEST'`); await click('start');
+      await click('start');
       assert.match(await cdp.eval(`${ui}.getElementById('notice').textContent`),/勾選/); assert.equal(await status(),'尚未開始');
     });
     await check('picker prevents account navigation and isolates a scrollable list',async()=>{
       await click('pick'); const before=await cdp.eval('realPageClicks'); await cdp.eval(`document.querySelector('#list a').click()`);
       assert.equal(await cdp.eval('realPageClicks'),before);assert.match(await cdp.eval(`${ui}.getElementById('scopeInfo').textContent`),/2 個帳號/);
     });
+    await check('orange list outline is high contrast, labelled, click-through and follows layout',async()=>{
+      const style=await cdp.eval(`(()=>{const e=document.querySelector('#threads-likes-probe-outline'),s=getComputedStyle(e);return {border:s.borderTopWidth,pointer:s.pointerEvents,label:e.textContent,background:s.backgroundColor,shadow:s.boxShadow};})()`);assert.equal(style.border,'6px');assert.equal(style.pointer,'none');assert.match(style.label,/已選按讚名單區域/);assert.notEqual(style.background,'rgba(0, 0, 0, 0)');assert.notEqual(style.shadow,'none');
+      await cdp.eval(`document.querySelector('#dialog').style.marginTop='80px';window.dispatchEvent(new Event('scroll'))`);await delay(80);
+      const positions=await cdp.eval(`({outline:document.querySelector('#threads-likes-probe-outline').getBoundingClientRect().top,list:document.querySelector('#list').getBoundingClientRect().top})`);assert.ok(Math.abs(positions.outline-positions.list)<2);await cdp.eval(`document.querySelector('#dialog').style.marginTop='';window.dispatchEvent(new Event('resize'))`);await delay(50);
+      await cdp.call('Page.captureScreenshot',{format:'png'}).then(r=>fs.writeFile(path.join(scratch,'outline-preview.png'),Buffer.from(r.data,'base64')));
+    });
     await cdp.eval(`${ui}.getElementById('targetConfirmed').checked=true;${ui}.getElementById('scopeConfirmed').checked=true;${ui}.getElementById('kind').value='reply'`);
     await check('changing activity after selection requires selecting the scope again',async()=>{
       await cdp.eval(`document.querySelector('#dialog h2').textContent='轉發'`);await click('start');assert.equal(await status(),'尚未開始');assert.match(await cdp.eval(`${ui}.getElementById('notice').textContent`),/失效/);
       await cdp.eval(`document.querySelector('#dialog h2').textContent='按讚'`);
     });
-    await click('start');await delay(500);
+    await click('start');await delay(1200);
     await check('only scoped visible profile URLs collected with case-insensitive dedup',async()=>{
       const s=await snapshot();assert.deepEqual(s.accounts.map(a=>a.username.toLowerCase()).sort(),['alice','bob']);assert.equal(s.target.kind,'reply');assert.equal(s.completeness,'unknown');assert.equal(s.liveCompatibility,'not-verified');
     });
@@ -104,7 +124,7 @@ class CDP {
       assert.ok(!(await snapshot()).accounts.some(a=>a.username.toLowerCase()==='author'));
     });
     await check('mutation observation captures virtualized replacement rows',async()=>{
-      await cdp.eval(`document.querySelector('#list').innerHTML='<div class="row"><a href="https://www.threads.com/@charlie">Charlie</a></div>'`);await delay(500);
+      await cdp.eval(`document.querySelector('#list').innerHTML='<div class="row"><a href="https://www.threads.com/@charlie">Charlie</a></div>'`);await delay(1500);
       assert.equal((await snapshot()).accounts.length,3);
     });
     await check('pause stops sampling and further automatic scrolling',async()=>{
@@ -135,8 +155,8 @@ class CDP {
       assert.equal(await status(),'已暫停');assert.ok(!(await snapshot()).accounts.some(a=>a.username==='wrongactivity'));
       await click('stop');await cdp.eval(`document.querySelector('#dialog h2').textContent='按讚'`);
     });
-    await check('page interaction pauses before a user can switch lists',async()=>{
-      await click('start');await delay(100);await cdp.eval(`document.querySelector('#dialog h2').dispatchEvent(new MouseEvent('pointerdown',{bubbles:true}))`);assert.equal(await status(),'已暫停');await click('stop');
+    await check('controls outside the selected list pause before a user can switch lists',async()=>{
+      await click('start');await delay(100);await cdp.eval(`const control=document.createElement('button');control.textContent='另一活動';document.body.append(control);control.click();control.remove()`);assert.equal(await status(),'已暫停');await click('stop');
     });
     await check('reinjection creates only one panel',async()=>{
       await cdp.eval(content);assert.equal(await cdp.eval(`document.querySelectorAll('#threads-likes-probe-host').length`),1);
@@ -212,6 +232,9 @@ class CDP {
     await check('job export preserves author role and cancelled outcomes without issuing more actions',async()=>{
       await click('blockExport');const exported=await cdp.eval(`__exportBlob.text().then(JSON.parse)`);assert.equal(exported.id,'fixture-job');assert.equal(exported.status,'stopped');assert.deepEqual(exported.items.map(a=>[a.username,a.role,a.status]),[['alice','liker','cancelled'],['author','author','cancelled']]);assert.ok(exported.exportedAt);assert.equal((await messages()).length,4);
     });
+    await check('combined diagnostic export includes collector, blocking job and extension version',async()=>{
+      await click('diagnostics');const exported=await cdp.eval(`__exportBlob.text().then(JSON.parse)`);assert.equal(exported.extensionVersion,'0.3.0');assert.equal(exported.collector.target.postId,'TEST');assert.equal(exported.blockingJob.id,'fixture-job');assert.equal(exported.blockingJob.status,'stopped');assert.ok(exported.exportedAt);assert.equal((await messages()).length,4);
+    });
     await cdp.eval(`${ui}.querySelector('main').scrollTop=${ui}.querySelector('main').scrollHeight`);
     await cdp.call('Page.captureScreenshot',{format:'png'}).then(r=>fs.writeFile(path.join(scratch,'blocking-preview.png'),Buffer.from(r.data,'base64')));
     await cdp.eval(`${ui}.querySelector('main').scrollTop=0`);
@@ -252,6 +275,50 @@ class CDP {
       await cdp.eval('__deferGetResponses=false;for(const release of __pendingGetResponses.splice(0))release()');await delay(100);
       assert.match(await cdp.eval(`${ui}.getElementById('blockStatus').textContent`),/封鎖執行中/);assert.equal(await cdp.eval(`${ui}.getElementById('blockPause').disabled`),false);assert.equal(await cdp.eval(`${ui}.getElementById('blockStart').disabled`),true);
       await click('blockPause');await delay(100);assert.equal((await messages()).at(-1).type,'BLOCK_PAUSE');assert.match(await cdp.eval(`${ui}.getElementById('blockStatus').textContent`),/封鎖已暫停/);await click('blockStop');await delay(50);
+    });
+    await check('paused blocking work is explained at the top and can be explicitly stopped there',async()=>{
+      await freshLegacyPanel();await click('blockStart');await delay(80);await click('blockPause');await delay(80);
+      assert.equal(await cdp.eval(`${ui}.getElementById('workBanner').hidden`),false);assert.match(await cdp.eval(`${ui}.getElementById('workBanner').textContent`),/要重新收集/);assert.equal(await cdp.eval(`${ui}.getElementById('blockReturn').disabled`),false);
+      await click('blockReturn');await delay(100);assert.equal((await messages()).at(-1).type,'BLOCK_STOP');assert.equal(await cdp.eval(`${ui}.getElementById('workBanner').hidden`),true);assert.equal(await cdp.eval(`${ui}.getElementById('pick').disabled`),false);
+    });
+    async function freshCollector(route=''){
+      await cdp.call('Page.navigate',{url:pageUrl});await delay(100);
+      for(let i=0;i<50;i++){if(await cdp.eval(`document.readyState==='complete' && !!document.querySelector('#list')`))break;await delay(100);}
+      await cdp.eval(setup());if(route)await cdp.eval(`history.replaceState({},'',${JSON.stringify(route)})`);await cdp.eval(core);await cdp.eval(content);await delay(120);
+      await click('pick');await cdp.eval(`document.querySelector('#list a').click();${ui}.getElementById('targetConfirmed').checked=true;${ui}.getElementById('scopeConfirmed').checked=true`);
+    }
+    await check('manual wheel scrolling does not pause collection and partial results can be reviewed',async()=>{
+      await freshCollector();await click('start');await delay(250);await cdp.eval(`document.querySelector('#list').dispatchEvent(new WheelEvent('wheel',{bubbles:true,deltaY:120}))`);await delay(100);assert.equal(await status(),'收集中');
+      await click('pause');assert.equal(await status(),'已暫停');assert.equal(await cdp.eval(`${ui}.getElementById('review').disabled`),false);await click('review');assert.equal(await status(),'收集已結束');assert.equal(await cdp.eval(`${ui}.getElementById('selectAll').disabled`),false);assert.ok(await cdp.eval(`${ui}.querySelectorAll('#accounts input').length>0`));
+    });
+    await check('frequent DOM mutations keep pause and review controls responsive',async()=>{
+      await freshCollector();await cdp.eval(`globalThis.__mutationFlood=setInterval(()=>{const e=document.createElement('span');e.textContent='.';document.querySelector('#list').append(e);e.remove()},5)`);await click('start');await delay(700);
+      const before=Date.now();await click('pause');assert.ok(Date.now()-before<1200);assert.equal(await status(),'已暫停');await cdp.eval(`clearInterval(__mutationFlood)`);await click('review');assert.equal(await status(),'收集已結束');assert.ok((await snapshot()).accounts.length>0);
+    });
+    await check('a spinner that never resolves ends within the no-growth deadline with partial results',async()=>{
+      await freshCollector();await cdp.eval(`document.querySelector('#list').insertAdjacentHTML('beforeend','<div role="progressbar" style="width:120px;height:25px">持續載入中</div>')`);const before=Date.now();await click('start');
+      for(let i=0;i<60;i++){await delay(300);if(await status()==='收集已結束')break;}
+      const result=await snapshot();assert.equal(await status(),'收集已結束');assert.ok(Date.now()-before<19000);assert.match(result.reason,/15 秒沒有新增帳號/);assert.match(result.reason,/載入指示仍未結束/);assert.equal(result.accounts.length,2);assert.equal(result.completeness,'unknown');assert.equal(await cdp.eval(`${ui}.getElementById('selectAll').disabled`),false);assert.ok(result.diagnostics.length>0);assert.match(await cdp.eval(`${ui}.getElementById('progress').textContent`),/已檢查/);
+    });
+    await check('changing a semantic search query pauses before collecting replacement rows',async()=>{
+      await freshCollector('/search?q=one');await click('start');await delay(150);
+      await cdp.eval(`history.pushState({},'', '/search?q=two');document.querySelector('#list').innerHTML='<div class="row"><a href="https://www.threads.com/@wrongquery">Other search</a></div>'`);await delay(1200);
+      assert.equal(await status(),'已暫停');assert.ok(!(await snapshot()).accounts.some(a=>a.username==='wrongquery'));await click('review');
+    });
+    await check('digits in username-like context headings remain identity evidence',async()=>{
+      await freshCollector();await cdp.eval(`document.querySelector('#dialog h2').textContent='@user1'`);await click('pick');await cdp.eval(`document.querySelector('#list a').click();${ui}.getElementById('scopeConfirmed').checked=true`);await click('start');await delay(150);
+      await cdp.eval(`document.querySelector('#dialog h2').textContent='@user2';document.querySelector('#list').innerHTML='<div class="row"><a href="https://www.threads.com/@wrongcontext">Other source</a></div>'`);await delay(1200);
+      assert.equal(await status(),'已暫停');assert.ok(!(await snapshot()).accounts.some(a=>a.username==='wrongcontext'));await click('review');
+    });
+    await check('picking a large mounted list previews only 200 links and stays responsive',async()=>{
+      await freshCollector();await cdp.eval(`document.querySelector('#list').innerHTML=Array.from({length:4000},(_,i)=>'<div class="row"><a href="https://www.threads.com/@bulk'+i+'">Bulk '+i+'</a></div>').join('')`);await click('pick');const before=Date.now();await cdp.eval(`document.querySelector('#list a').click()`);
+      assert.ok(Date.now()-before<1800);assert.match(await cdp.eval(`${ui}.getElementById('scopeInfo').textContent`),/預覽前 200 個連結可辨識 200 個帳號/);
+      await cdp.call('Page.captureScreenshot',{format:'png'}).then(r=>fs.writeFile(path.join(scratch,'outline-preview.png'),Buffer.from(r.data,'base64')));
+    });
+    await check('an immediate stop and restart reads the new generation before its first scroll',async()=>{
+      await freshCollector();await cdp.eval(`document.querySelector('#list').innerHTML=Array.from({length:1800},(_,i)=>'<div class="row"><a href="https://www.threads.com/@initial'+i+'">Initial '+i+'</a></div>').join('')`);await click('pick');await cdp.eval(`document.querySelector('#list a').click();${ui}.getElementById('scopeConfirmed').checked=true`);
+      await cdp.eval(`(()=>{const list=document.querySelector('#list'),native=Object.getOwnPropertyDescriptor(Element.prototype,'scrollTop');let recycled=false;Object.defineProperty(list,'scrollTop',{configurable:true,get(){return native.get.call(this)},set(value){native.set.call(this,value);if(!recycled){recycled=true;this.innerHTML='<div class="row"><a href="https://www.threads.com/@recycled">Recycled next screen</a></div>'}}});${ui}.getElementById('start').click();${ui}.getElementById('stop').click();${ui}.getElementById('start').click();})()`);await delay(1000);await click('pause');await click('review');
+      assert.ok((await snapshot()).accounts.some(a=>a.username==='initial0'),'new generation must sample the initial virtual screen before scrolling it away');
     });
     const report={testedAt:new Date().toISOString(),browser:(await cdp.call('Browser.getVersion')).product,environment:'isolated headless Chrome, simulated local fixture, mocked chrome.storage and runtime job messages; no actual block actions, no live Threads or installed-extension end-to-end test',passed:results.length,tests:results};
     await fs.writeFile(path.join(scratch,'browser-results.json'),JSON.stringify(report,null,2));

@@ -25,36 +25,38 @@
       input[type=checkbox]{margin:0 6px 0 0;vertical-align:middle} .check{display:flex;align-items:flex-start;gap:5px} .check input{margin-top:4px;flex:none}
       button{font:inherit;border:1px solid #c4cedc;border-radius:7px;padding:8px 11px;background:white;color:#243852;cursor:pointer}button:disabled{opacity:.45;cursor:default}button.primary{background:#235bc9;border-color:#235bc9;color:white}button.danger{color:#b22b32}
       .buttons{display:flex;gap:7px;flex-wrap:wrap;margin-top:10px}header button{background:transparent;color:white;border:0;font-size:20px;padding:0 5px}
-      #status{font-weight:650}#reason{font-size:12px;color:#536177}#blockStatus{white-space:pre-line;overflow-wrap:anywhere} .count{font-size:30px;font-weight:750;color:#235bc9}#accounts{max-height:300px;overflow:auto;margin-top:10px}
+      #status{font-weight:650}#reason,#progress{font-size:12px;color:#536177}#blockStatus,#sourceInfo{white-space:pre-line;overflow-wrap:anywhere} .count{font-size:30px;font-weight:750;color:#235bc9}#accounts{max-height:300px;overflow:auto;margin-top:10px}
       .account{padding:7px 0;border-top:1px solid #edf0f5;overflow-wrap:anywhere}.account a{color:#204fad;text-decoration:none}.account small{display:block}footer{padding:10px 16px;border-top:1px solid #dce2ec;background:white;font-size:11px;color:#536177}
       #notice{padding:9px 12px;background:#fff1cf;border-radius:6px;margin-bottom:12px;white-space:pre-wrap;font-size:12px}#notice:empty{display:none}
     </style>
     <div class="panel">
-      <header><div><h1>Threads 名單與批次封鎖</h1><div class="sub">0.2.0 · 先確認名單，再執行</div></div><button id="close" title="關閉並暫停">×</button></header>
+      <header><div><h1>Threads 名單與批次封鎖</h1><div class="sub">0.3.0 · 先確認名單，再執行</div></div><button id="close" title="關閉並暫停">×</button></header>
       <main>
         <div id="notice" role="status" aria-live="polite"></div>
+        <section id="workBanner" class="warning" hidden><strong>有暫停中的封鎖工作</strong><p class="hint">請繼續或中止原工作。要重新收集或重新選名單，請先中止舊工作。</p><button id="blockReturn" class="danger">中止舊工作並回到名單</button></section>
         <section class="warning"><strong>封鎖會真的更改你的 Threads 帳號</strong><p class="hint">先收集並核對名單，再按下方封鎖按鈕。名單完整性未知；不可見帳號不會自動補入。作者預設不列入。</p></section>
         <section><h2>1. 確認來源</h2>
           <label for="kind">目標類型</label><select id="kind"><option value="post">貼文</option><option value="reply">留言／回覆</option></select>
-          <label for="target">該目標的直接連結</label><input id="target" type="url" placeholder="https://www.threads.com/@帳號/post/代碼">
-          <p class="hint">留言請填留言本身的連結。若只有主文連結，請先不要收集該留言。</p>
+          <label for="target">自動辨識的來源（不必填連結）</label><input id="target" type="url" readonly aria-label="自動辨識的來源連結" placeholder="請點下方按鈕選擇貼文或留言">
+          <p id="sourceInfo" class="hint">正在辨識目前頁面…</p><div class="buttons"><button id="pickTarget">選擇貼文／留言</button><button id="cancelTarget" hidden>取消選擇來源</button></div>
+          <p class="hint">直接開啟貼文或留言時自動取得。若在首頁或串文內，按「選擇貼文／留言」後點目標內容，工具會讀取該卡片的時間戳連結。</p>
           <label for="declaredCount">頁面顯示的按讚數（選填）</label><input id="declaredCount" type="text" inputmode="numeric" placeholder="精確整數，例如 125">
-          <label class="check"><input id="targetConfirmed" type="checkbox"><span>我已核對連結，且接下來開啟的是此目標的「按讚」名單。</span></label>
+          <label class="check"><input id="targetConfirmed" type="checkbox"><span>我已核對自動辨識的來源，且接下來開啟的是此目標的「按讚」名單。</span></label>
         </section>
         <section><h2>2. 選擇按讚名單區域</h2><p class="hint">先在 Threads 手動展開按讚名單，並切到「按讚」分頁。按下方按鈕後，點名單內任一帳號；工具不會開啟該帳號。</p>
           <div class="buttons"><button id="pick">選擇名單區域</button><button id="cancelPick" hidden>取消選擇</button></div>
           <p id="scopeInfo" class="hint">尚未選擇</p>
           <label class="check"><input id="scopeConfirmed" type="checkbox"><span>我已檢查橘框，只包含上述目標的按讚名單，沒有其他活動或推薦帳號。</span></label>
         </section>
-        <section><h2>3. 收集與檢查</h2><div id="status" aria-live="polite">尚未開始</div><div id="reason"></div><div><span id="count" class="count">0</span> 個不重複帳號</div>
-          <div class="buttons"><button id="start" class="primary">開始新收集</button><button id="pause" disabled>暫停</button><button id="resume" disabled>繼續</button><button id="stop" class="danger" disabled>中止</button></div>
-          <p class="hint">開始新收集會取代此分頁的上一份紀錄，請先匯出需要保留的資料。操作 Threads 頁面時會自動暫停。名單收集上限為 10,000 人、單次執行上限為 10 分鐘。</p>
+        <section><h2>3. 收集與檢查</h2><div id="status" aria-live="polite">尚未開始</div><div id="reason"></div><div id="progress" aria-live="polite"></div><div><span id="count" class="count">0</span> 個不重複帳號</div>
+          <div class="buttons"><button id="start" class="primary">開始新收集</button><button id="pause" disabled>暫停</button><button id="resume" disabled>繼續</button><button id="review" disabled>結束並檢查名單</button><button id="stop" class="danger" disabled>中止收集</button></div>
+          <p class="hint">開始新收集會取代此分頁的上一份紀錄。可隨時「結束並檢查名單」保留部分結果；約 15 秒沒有新增帳號會結束等待。名單上限 10,000 人，每次執行上限 2 分鐘。</p>
           <label for="search">搜尋待選帳號</label><input id="search" type="text" placeholder="帳號或標籤">
           <div class="buttons"><button id="selectAll">全選按讚帳號</button><button id="selectNone">全部取消</button></div>
           <div id="accounts"></div><div class="buttons"><button id="prevPage">上一頁</button><span id="pageInfo" class="hint"></span><button id="nextPage">下一頁</button></div>
         </section>
         <section><h2>4. 匯出本機結果</h2><p class="hint">JSON 包含來源、時間與結束原因；CSV 為帳號清單。名單每頁 100 筆，匯出包含全部。</p>
-          <div class="buttons"><button id="json">匯出 JSON</button><button id="csv">匯出 CSV</button><button id="clear">清除本機紀錄</button></div>
+          <div class="buttons"><button id="diagnostics" class="primary">匯出診斷資料（名單＋封鎖）</button><button id="json">只匯出名單 JSON</button><button id="csv">匯出 CSV</button><button id="clear">清除本機紀錄</button></div>
         </section>
         <section><h2>5. 確認並批次封鎖</h2>
           <p id="authorInfo" class="hint">請先收集名單。</p>
@@ -73,61 +75,124 @@
   document.documentElement.appendChild(host);
   const $ = (id) => shadow.getElementById(id);
   const labels = { idle: "尚未開始", collecting: "收集中", paused: "已暫停", stopped: "已中止", ended: "收集已結束", restored: "已還原上次紀錄（不會自動繼續）" };
-  let state = freshState(), scope = null, scopePage = "", outline = null, picking = false;
+  let state = freshState(), scope = null, scopePage = "", outline = null, picking = false, pickingTarget = false;
   let generation = 0, observer = null, sampleTimer = null, saveTimer = null, saveChain = Promise.resolve();
   let changeRevision = 0, runningSince = 0, scopeSignature = "", listPage = 0, blockJob = null, blockRequest = false, commandRevision = 0, pauseAfterRequest = false;
-  function freshState() { return { schemaVersion: 1, mode: "read-only-probe", status: "idle", reason: "", completeness: "unknown", liveCompatibility: "not-verified", target: null, accounts: [], blockSelection: [], diagnostics: [], startedAt: null, updatedAt: null, finishedAt: null, scrollPasses: 0, scopeEvidence: null, limits: { maxAccounts: 10000, maxRunMs: 600000 } }; }
+  let samplePromise = null, sampleGeneration = null, scanCursor = 0, lastGrowthAt = 0, renderTimer = null, outlineFrame = null, pickedSourcePage = null;
+  function freshState() { return { schemaVersion: 1, extensionVersion: "0.3.0", mode: "read-only-probe", status: "idle", reason: "", completeness: "unknown", liveCompatibility: "not-verified", target: null, accounts: [], blockSelection: [], diagnostics: [], startedAt: null, updatedAt: null, finishedAt: null, scrollPasses: 0, scopeEvidence: null, limits: { maxAccounts: 10000, maxRunMs: 120000, noGrowthMs: 15000 } }; }
   function notice(text = "") { $("notice").textContent = text; }
+  function pageIdentity() { return Core.sourcePage?.(location.href) || `${location.origin}${location.pathname}${location.search}${location.hash}`; }
+  function detectedTarget() {
+    return Core.canonicalTarget(location.href) || Core.canonicalTarget(document.querySelector('link[rel="canonical"]')?.getAttribute("href"), location.href);
+  }
+  function resetApprovals() { $("targetConfirmed").checked = false; $("scopeConfirmed").checked = false; $("includeAuthor").checked = false; $("blockConfirmed").checked = false; }
+  function setDetectedTarget(target, summary = "", picked = false) {
+    const changed = $("target").value !== (target?.url || "");
+    $("target").value = target?.url || "";
+    $("sourceInfo").textContent = target ? `${picked ? "已選定" : "已自動辨識"} @${target.username}${summary ? `\n${summary.slice(0, 180)}` : ""}` : "未辨識到單一來源。請按「選擇貼文／留言」，再點該內容。";
+    if (changed) { resetApprovals(); scope = null; scopeSignature = ""; outline?.remove(); outline = null; $("scopeInfo").textContent = "尚未選擇"; }
+    if (picked) pickedSourcePage = pageIdentity();
+  }
+  function sourceFromElement(element) {
+    if (!(element instanceof Element)) return null;
+    for (let node = element, depth = 0; node && node !== document.body && depth < 14; node = node.parentElement, depth++) {
+      if (node === host) return null;
+      const links = [...(node.matches("a[href]") ? [node] : []), ...node.querySelectorAll("a[href]")];
+      const targets = new Map();
+      for (const link of links) {
+        if (!link.querySelector("time")) continue;
+        const target = Core.canonicalTarget(link.getAttribute("href"), location.href);
+        if (target && isVisible(link)) targets.set(target.url, target);
+      }
+      if (targets.size === 1) return { target: [...targets.values()][0], summary: node.innerText.trim().slice(0, 180) };
+      if (targets.size > 1) return null;
+    }
+    return null;
+  }
+  function cancelTargetPicking() {
+    pickingTarget = false; document.removeEventListener("click", pickTargetClick, true); document.removeEventListener("keydown", pickTargetKey, true);
+    $("cancelTarget").hidden = true; render();
+  }
+  function pickTargetKey(event) { if (event.key === "Escape") { event.preventDefault(); event.stopImmediatePropagation(); cancelTargetPicking(); notice("已取消來源選擇。"); } }
+  function pickTargetClick(event) {
+    if (event.composedPath().includes(host)) return;
+    event.preventDefault(); event.stopImmediatePropagation();
+    const found = sourceFromElement(event.target);
+    if (!found) return notice("未能唯一辨識這張卡片。請點目標的正文或時間，不要點整個串文外框。");
+    setDetectedTarget(found.target, found.summary, true); cancelTargetPicking(); notice("來源已取得。請開啟這則內容的按讚名單，再選擇名單區域。");
+  }
+  $("pickTarget").onclick = () => {
+    cancelPicking(); pickingTarget = true; $("cancelTarget").hidden = false; notice("請點目標貼文／留言的正文或時間。這次點擊只選擇來源，不會導向頁面。");
+    document.addEventListener("click", pickTargetClick, true); document.addEventListener("keydown", pickTargetKey, true); render();
+  };
+  $("cancelTarget").onclick = () => { cancelTargetPicking(); notice("已取消來源選擇。"); };
   function isVisible(element) {
     if (!(element instanceof Element) || !element.isConnected || element.closest('[hidden],[aria-hidden="true"]')) return false;
     const style = getComputedStyle(element), rect = element.getBoundingClientRect();
     return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
   }
-  function accountsIn(root) {
-    const result = [];
-    for (const link of root.querySelectorAll("a[href]")) {
+  function accountsIn(root, maxLinks = 200) {
+    const result = [], links = root.querySelectorAll("a[href]");
+    for (let index = 0; index < Math.min(links.length, maxLinks); index++) {
+      const link = links[index];
       if (!isVisible(link)) continue;
       const account = Core.profileFromHref(link.getAttribute("href"), location.href);
       if (!account) continue;
-      const author = state.target?.username || Core.canonicalTarget($("target").value)?.username;
+      const author = Core.canonicalTarget($("target").value)?.username || state.target?.username;
       if (author && account.username.toLowerCase() === author.toLowerCase()) continue;
       result.push({ ...account, label: (link.innerText || link.getAttribute("aria-label") || "").trim().slice(0, 160) });
     }
     return result;
   }
-  function samePage() { return `${location.origin}${location.pathname}` === scopePage; }
+  function samePage() { return pageIdentity() === scopePage; }
+  function contextLabel(element) {
+    const value = element.textContent.trim().slice(0, 160);
+    // Strip counts only from known activity labels. Digits in usernames remain identity evidence.
+    return value.replace(/^(likes?|按讚|赞|讚|喜歡|喜欢)\s*[（(]?\s*\d[\d,.\s]*(?:[kKmM萬千])?\s*[)）]?$/i, "$1");
+  }
   function contextSignature() {
     if (!scope) return "";
     const context = scope.closest('[role="dialog"]') || scope.parentElement;
     if (!context) return "";
-    const items = [...context.querySelectorAll('h1,h2,h3,[role="heading"],[role="tab"],[aria-selected="true"],a[href]')].filter(element => {
+    const items = [...context.querySelectorAll('h1,h2,h3,[role="heading"],[role="tab"],[aria-selected="true"]')].slice(0, 60).filter(element => {
       if (!isVisible(element)) return false;
-      if (element.matches('a[href]')) return !scope.contains(element) && !!Core.canonicalTarget(element.getAttribute('href'), location.href);
+      if (scope !== context && scope.contains(element)) return false;
       if (scope.contains(element) && element.closest('[role="listitem"],a[href]')) return false;
       return true;
-    }).map(element => [element.tagName, element.getAttribute('role'), element.getAttribute('aria-selected'), element.matches('a[href]') ? Core.canonicalTarget(element.getAttribute('href'), location.href)?.url : element.textContent.trim().slice(0, 160)]);
+    }).map(element => [element.tagName, element.getAttribute('role'), element.getAttribute('aria-selected'), contextLabel(element)]);
     return JSON.stringify(items);
   }
   function validScope() { return scope && scope !== document.body && scope !== document.documentElement && isVisible(scope) && samePage() && (!scopeSignature || contextSignature() === scopeSignature); }
   function drawOutline() {
     if (!scope) return;
     const r = scope.getBoundingClientRect();
-    if (!outline) { outline = document.createElement("div"); outline.style.cssText = "position:fixed;pointer-events:none;z-index:2147483646;border:3px solid #f59e0b;border-radius:6px;"; document.documentElement.appendChild(outline); }
+    if (!outline) {
+      outline = document.createElement("div"); outline.id = "threads-likes-probe-outline"; outline.setAttribute("aria-hidden", "true");
+      outline.style.cssText = "position:fixed;pointer-events:none;z-index:2147483646;box-sizing:border-box;border:6px solid #ff6a00;border-radius:8px;background:rgba(255,106,0,.09);box-shadow:0 0 0 2px white,0 0 0 4px #111,0 0 26px #ff6a0080;";
+      const label = document.createElement("div"); label.textContent = "已選按讚名單區域"; label.style.cssText = "position:absolute;top:-34px;left:0;background:#ff6a00;color:#111;border:2px solid white;border-radius:6px;padding:3px 8px;font:bold 13px/1.5 system-ui,sans-serif;box-shadow:0 1px 4px #0008;"; outline.append(label); document.documentElement.appendChild(outline);
+    }
     Object.assign(outline.style, { left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px` });
+    outline.firstElementChild.style.top = r.top >= 36 ? "-34px" : `${r.height + 6}px`;
   }
+  function followOutline() { if (!outlineFrame) outlineFrame = requestAnimationFrame(() => { outlineFrame = null; if (scope?.isConnected && host.style.display !== "none") drawOutline(); }); }
+  window.addEventListener("scroll", followOutline, { capture: true, passive: true }); window.addEventListener("resize", followOutline, { passive: true });
   function render() {
     $("status").textContent = labels[state.status] || state.status;
     $("reason").textContent = state.reason;
     $("count").textContent = state.accounts.length.toLocaleString();
     const active = state.status === "collecting", blocking = !!blockJob && (["running", "paused"].includes(blockJob.status) || !!blockJob.current), held = active || state.status === "paused";
-    for (const id of ["kind", "target", "declaredCount", "targetConfirmed", "scopeConfirmed", "pick"]) $(id).disabled = held || blocking;
-    $("start").disabled = held || picking || blocking;
+    $("workBanner").hidden = blockJob?.status !== "paused";
+    $("blockReturn").disabled = blockJob?.status !== "paused" || blockRequest;
+    for (const id of ["kind", "target", "declaredCount", "targetConfirmed", "scopeConfirmed", "pick", "pickTarget"]) $(id).disabled = held || blocking;
+    $("start").disabled = held || picking || pickingTarget || blocking;
     $("pause").disabled = !active;
     $("resume").disabled = state.status !== "paused";
     $("stop").disabled = !held;
+    $("review").disabled = !held;
     $("clear").disabled = held || blocking;
     $("json").disabled = !state.target;
     $("csv").disabled = !state.target;
+    $("diagnostics").disabled = !state.target && !blockJob;
     const selected = new Set(state.blockSelection || []), query = $("search").value.trim().toLowerCase();
     const rows = state.accounts.filter(a => `${a.username} ${a.label}`.toLowerCase().includes(query));
     const pages = Math.max(1, Math.ceil(rows.length / 100)); listPage = Math.min(listPage, pages - 1);
@@ -147,7 +212,7 @@
     const actor = $("actor").value.trim().replace(/^@/, "").toLowerCase(), likers = state.accounts.filter(a => selected.has(a.username.toLowerCase()) && a.username.toLowerCase() !== actor);
     const extraAuthor = $("includeAuthor").checked && state.target && state.target.username.toLowerCase() !== actor;
     $("selectionSummary").textContent = `已選 ${likers.length} 個按讚帳號${extraAuthor ? " ＋ 1 位作者" : ""}；登入的自己會排除。`;
-    $("blockStart").disabled = !state.target || held || blocking || blockRequest || !(likers.length + (extraAuthor ? 1 : 0));
+    $("blockStart").disabled = !state.target || state.target.url !== $("target").value || held || blocking || blockRequest || !(likers.length + (extraAuthor ? 1 : 0));
     $("blockPause").disabled = blockJob?.status !== "running" || blockRequest;
     $("blockResume").disabled = blockJob?.status !== "paused" || !!blockJob?.current || blockRequest || !blockJob?.items.some(a => a.status === "pending");
     // Allow typing the original actor to resume a recovered job.
@@ -164,52 +229,81 @@
     }
   }
   function persistNow() {
-    clearTimeout(saveTimer); state.updatedAt = new Date().toISOString();
+    clearTimeout(saveTimer); saveTimer = null; state.updatedAt = new Date().toISOString();
     const snapshot = JSON.parse(JSON.stringify(state));
     saveChain = saveChain.catch(() => {}).then(() => chrome.storage.local.set({ [STORE_KEY]: snapshot })).catch(() => notice("本機儲存失敗。請立即匯出目前資料；不要依賴重開後還原。"));
     return saveChain;
   }
-  function scheduleSave() { clearTimeout(saveTimer); saveTimer = setTimeout(persistNow, 350); }
-  function disconnect() { generation++; observer?.disconnect(); observer = null; clearTimeout(sampleTimer); sampleTimer = null; }
+  function scheduleSave() { if (!saveTimer) saveTimer = setTimeout(persistNow, 1000); }
+  function requestRender() { if (!renderTimer) renderTimer = setTimeout(() => { renderTimer = null; render(); }, 150); }
+  function disconnect() { generation++; observer?.disconnect(); observer = null; clearTimeout(sampleTimer); sampleTimer = null; clearTimeout(renderTimer); renderTimer = null; }
   function finish(status, reason) {
     disconnect(); state.status = status; state.reason = reason;
     if (["ended", "stopped"].includes(status)) state.finishedAt = new Date().toISOString();
     persistNow(); render();
   }
-  function sample() {
-    if (state.status !== "collecting") return;
-    if (!validScope()) { finish("paused", "名單關閉、區域失效或來源頁面已切換。請還原原名單後再繼續；換目標請中止並重新收集。"); return; }
-    const prior = state.accounts.length;
-    state.accounts = Core.mergeAccounts(state.accounts, accountsIn(scope), new Date().toISOString()).filter(a => a.username.toLowerCase() !== state.target.username.toLowerCase()).slice(0, state.limits.maxAccounts);
-    state.blockSelection = state.accounts.map(a => a.username.toLowerCase());
-    if (prior !== state.accounts.length) { changeRevision++; $("blockConfirmed").checked = false; render(); scheduleSave(); }
-    drawOutline();
-    if (state.accounts.length >= state.limits.maxAccounts) finish("ended", "達到 10,000 人上限。完整性未知。");
+  async function sample(token = generation) {
+    if (samplePromise) {
+      const priorGeneration = sampleGeneration; await samplePromise;
+      if (priorGeneration !== token && token === generation && state.status === "collecting") return sample(token);
+      return;
+    }
+    if (state.status !== "collecting" || token !== generation) return;
+    sampleGeneration = token;
+    samplePromise = (async () => {
+      if (!validScope()) { finish("paused", "名單關閉、活動或來源頁面已切換。可按「結束並檢查名單」保留目前結果。"); return; }
+      const links = scope.querySelectorAll("a[href]"), incoming = [], end = Math.min(links.length, scanCursor + 2400);
+      $("progress").textContent = `正在讀取第 ${state.scrollPasses + 1} 輪，檢查 ${Math.min(end, links.length)} / ${links.length} 個連結…`;
+      for (let index = scanCursor; index < end; index++) {
+        if (index % 80 === 0) {
+          await new Promise(resolve => setTimeout(resolve, 0));
+          if (token !== generation || state.status !== "collecting") return;
+        }
+        const link = links[index], account = Core.profileFromHref(link.getAttribute("href"), location.href);
+        if (!account || account.username.toLowerCase() === state.target.username.toLowerCase() || !isVisible(link)) continue;
+        incoming.push({ ...account, label: (link.innerText || link.getAttribute("aria-label") || "").trim().slice(0, 160) });
+      }
+      scanCursor = end >= links.length ? 0 : end;
+      if (token !== generation || state.status !== "collecting") return;
+      if (!validScope()) { finish("paused", "讀取期間活動或來源變更，已暫停以免混入其他帳號。"); return; }
+      const previousNames = new Set(state.accounts.map(a => a.username.toLowerCase())), selected = new Set(state.blockSelection), prior = state.accounts.length;
+      state.accounts = Core.mergeAccounts(state.accounts, incoming, new Date().toISOString()).filter(a => a.username.toLowerCase() !== state.target.username.toLowerCase()).slice(0, state.limits.maxAccounts);
+      for (const account of state.accounts) if (!previousNames.has(account.username.toLowerCase())) selected.add(account.username.toLowerCase());
+      state.blockSelection = [...selected];
+      if (prior !== state.accounts.length) { lastGrowthAt = Date.now(); changeRevision++; $("blockConfirmed").checked = false; requestRender(); scheduleSave(); }
+      $("count").textContent = state.accounts.length.toLocaleString(); drawOutline();
+      if (state.accounts.length >= state.limits.maxAccounts) finish("ended", "達到 10,000 人上限。完整性未知。");
+    })();
+    try { await samplePromise; } finally { samplePromise = null; sampleGeneration = null; }
   }
   async function collect() {
-    disconnect(); state.status = "collecting"; state.reason = "僅讀取所選區域；完整性未知。"; runningSince = Date.now();
+    disconnect(); state.status = "collecting"; state.reason = "僅讀取所選區域；完整性未知。可隨時結束並檢查已收集名單。"; runningSince = Date.now(); lastGrowthAt = runningSince;
     const token = generation;
-    observer = new MutationObserver(() => { if (!sampleTimer) sampleTimer = setTimeout(() => { sampleTimer = null; sample(); }, 80); });
+    observer = new MutationObserver(() => { if (!sampleTimer) sampleTimer = setTimeout(() => { sampleTimer = null; sample(token).catch(error => { if (token === generation) finish("paused", `讀取中斷：${error.message}`); }); }, 350); });
     observer.observe(scope, { childList: true, subtree: true, attributes: true, attributeFilter: ["href", "hidden", "aria-hidden"] });
     persistNow(); render();
     let stablePasses = 0;
     try {
       while (token === generation && state.status === "collecting") {
         if (document.hidden) { finish("paused", "分頁已移到背景。回到此分頁後手動繼續。"); break; }
-        sample(); if (token !== generation) break;
-        if (Date.now() - runningSince >= state.limits.maxRunMs) { finish("ended", "達到單次 10 分鐘上限。完整性未知。"); break; }
+        await sample(token); if (token !== generation) break;
+        if (Date.now() - runningSince >= state.limits.maxRunMs) { finish("ended", "達到單次 2 分鐘上限，已保留資料供檢查。完整性未知。"); break; }
         const before = { revision: changeRevision, top: scope.scrollTop, height: scope.scrollHeight };
         scope.scrollTop = Math.min(scope.scrollHeight, scope.scrollTop + Math.max(160, scope.clientHeight * 0.8));
         state.scrollPasses++; scheduleSave();
         await new Promise(resolve => setTimeout(resolve, 1000));
         if (token !== generation || state.status !== "collecting") break;
-        sample(); if (token !== generation) break;
+        await sample(token); if (token !== generation) break;
         const bottom = scope.scrollTop + scope.clientHeight >= scope.scrollHeight - 3;
         const busy = [...scope.querySelectorAll('[aria-busy="true"],[role="progressbar"]')].some(isVisible);
         const unchanged = before.revision === changeRevision && before.height === scope.scrollHeight;
         state.diagnostics.push({ pass: state.scrollPasses, at: new Date().toISOString(), beforeTop: before.top, afterTop: scope.scrollTop, clientHeight: scope.clientHeight, scrollHeight: scope.scrollHeight, accounts: state.accounts.length, newAccountsObserved: before.revision !== changeRevision, bottom, busy });
         state.diagnostics = state.diagnostics.slice(-600);
-        stablePasses = bottom && unchanged && !busy ? stablePasses + 1 : 0;
+        const noGrowth = Math.max(0, Math.floor((Date.now() - lastGrowthAt) / 1000));
+        $("progress").textContent = `已檢查 ${state.scrollPasses} 輪 · ${state.accounts.length} 個帳號 · ${noGrowth} 秒無新增${busy ? " · 網站仍顯示載入中" : ""}`;
+        scheduleSave();
+        stablePasses = bottom && unchanged && !busy && scanCursor === 0 ? stablePasses + 1 : 0;
+        if (Date.now() - lastGrowthAt >= state.limits.noGrowthMs && scanCursor === 0) { finish("ended", `約 15 秒沒有新增帳號${busy ? "，網站載入指示仍未結束" : "，捲動可能沒有取得更多資料"}。已保留目前名單供檢查；完整性未知。`); break; }
         if (stablePasses >= 5) { finish("ended", "已到所選區域底部，連續 5 次檢查沒有新增帳號。可能仍有未載入資料，完整性未知。"); break; }
       }
     } catch (error) { if (token === generation) finish("paused", `頁面讀取中斷：${error.message}`); }
@@ -237,12 +331,13 @@
     event.preventDefault(); event.stopImmediatePropagation();
     const candidate = candidateFor(event.target);
     if (!candidate) { notice("無法辨識名單區域。請點按讚名單內的帳號文字；若仍失敗，此頁面目前不支援。按 Esc 取消。"); return; }
-    scope = candidate; scopePage = `${location.origin}${location.pathname}`; scopeSignature = contextSignature(); $("scopeConfirmed").checked = false;
+    scope = candidate; scopePage = pageIdentity(); scopeSignature = contextSignature(); $("scopeConfirmed").checked = false;
     drawOutline(); const count = new Set(accountsIn(scope).map(a => a.username.toLowerCase())).size;
-    $("scopeInfo").textContent = `已選定橘框區域，目前可辨識 ${count} 個帳號。請核對範圍及活動類型。`;
+    $("scopeInfo").textContent = `已選定橘框區域，預覽前 200 個連結可辨識 ${count} 個帳號。完整結果開始收集後取得，請核對範圍及活動類型。`;
     cancelPicking(); notice("選擇完成。請確認橘框及來源後，再開始收集。");
   }
   $("pick").onclick = () => {
+    cancelTargetPicking();
     picking = true; notice("請點 Threads 按讚名單內任一帳號文字。按 Esc 可取消。");
     $("cancelPick").hidden = false; $("pick").textContent = "等待選取…";
     document.addEventListener("click", pickClick, true); document.addEventListener("keydown", pickKey, true); render();
@@ -250,22 +345,23 @@
   $("cancelPick").onclick = () => { cancelPicking(); notice("已取消選擇。"); };
   $("start").onclick = () => {
     const target = Core.canonicalTarget($("target").value);
-    if (!target) return notice("請填寫有效的 Threads 貼文／留言直接連結（https://www.threads.com/@帳號/post/代碼）。");
+    if (!target) return notice("尚未辨識來源。請按「選擇貼文／留言」，再點目標正文或時間，不必填寫連結。");
     if (!$("targetConfirmed").checked || !$("scopeConfirmed").checked) return notice("請先勾選來源與名單區域的兩項確認。");
     if (!validScope()) return notice("名單區域已失效或頁面已改變，請重新選擇。");
     const rawCount = $("declaredCount").value.trim(), count = rawCount ? Core.normalizeCounts(rawCount) : null;
     if (rawCount && count == null) return notice("按讚數請填精確非負整數；例如 1.2K 請留空。");
     if (state.target && !confirm("開始新收集將取代上一份本機紀錄。確定已匯出需要保留的資料？")) return;
-    state = freshState(); changeRevision = 0; listPage = 0; $("includeAuthor").checked = false; $("blockConfirmed").checked = false;
-    state.target = { ...target, kind: $("kind").value, declaredLikeCount: count, binding: "user-confirmed", sourcePage: `${location.origin}${location.pathname}` };
+    state = freshState(); changeRevision = 0; listPage = 0; scanCursor = 0; $("includeAuthor").checked = false; $("blockConfirmed").checked = false;
+    state.target = { ...target, kind: $("kind").value, declaredLikeCount: count, binding: "user-confirmed", sourceSelection: pickedSourcePage ? "picked-card-timestamp" : "page-url-or-canonical", sourcePage: pageIdentity() };
     state.scopeEvidence = { selection: "user-picked-profile-link", tag: scope.tagName, role: scope.getAttribute("role"), likeOnlyConfirmedByUser: true };
     state.startedAt = new Date().toISOString(); notice(); collect();
   };
   $("pause").onclick = () => finish("paused", "使用者暫停。已保留目前名單。");
   $("resume").onclick = () => { if (!validScope()) return notice("原名單區域已失效。請中止並重新選擇、確認後開始新收集。"); notice(); collect(); };
   $("stop").onclick = () => finish("stopped", "使用者中止。保留已收集名單，不再自動捲動。");
+  $("review").onclick = () => finish("ended", "使用者結束收集並檢查名單，已保留部分結果；完整性未知。");
   function pauseBlockingOnLeave() { if (blockRequest) pauseAfterRequest = true; else if (blockJob?.status === "running") blockCommand("BLOCK_PAUSE"); }
-  $("close").onclick = () => { if (state.status === "collecting") finish("paused", "面板已關閉，收集暫停。"); pauseBlockingOnLeave(); cancelPicking(); host.style.display = "none"; outline?.remove(); outline = null; };
+  $("close").onclick = () => { if (state.status === "collecting") finish("paused", "面板已關閉，收集暫停。"); pauseBlockingOnLeave(); cancelPicking(); cancelTargetPicking(); host.style.display = "none"; outline?.remove(); outline = null; };
   function exportFile(format) {
     if (!state.target) return;
     const snapshot = JSON.parse(JSON.stringify(state)); snapshot.exportedAt = new Date().toISOString();
@@ -275,6 +371,11 @@
     shadow.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
   $("json").onclick = () => exportFile("json"); $("csv").onclick = () => exportFile("csv");
+  $("diagnostics").onclick = () => {
+    const report = { schemaVersion: 1, extensionVersion: "0.3.0", collector: state.target ? JSON.parse(JSON.stringify(state)) : null, blockingJob: blockJob ? JSON.parse(JSON.stringify(blockJob)) : null, exportedAt: new Date().toISOString() };
+    const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json;charset=utf-8" }), url = URL.createObjectURL(blob), link = document.createElement("a");
+    link.href = url; link.download = `threads-diagnostics-${state.target?.postId || blockJob?.target?.postId || Date.now()}.json`; shadow.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
   async function blockCommand(type, payload = {}) {
     if (!chrome.runtime?.sendMessage) { notice("擴充功能背景連線不可用，請重新載入擴充功能及此頁面。"); return; }
     commandRevision++; blockRequest = true; render();
@@ -306,6 +407,7 @@
   $("blockPause").onclick = () => blockCommand("BLOCK_PAUSE");
   $("blockResume").onclick = () => blockCommand("BLOCK_RESUME", { actorUsername: $("actor").value });
   $("blockStop").onclick = () => blockCommand("BLOCK_STOP");
+  $("blockReturn").onclick = async () => { await blockCommand("BLOCK_STOP"); if (blockJob?.status === "stopped" && state.status === "paused") finish("ended", "舊封鎖工作已中止，已保留收集名單供檢查。"); };
   $("blockExport").onclick = () => {
     if (!blockJob) return;
     const blob = new Blob([JSON.stringify({ ...blockJob, exportedAt: new Date().toISOString() }, null, 2)], { type: "application/json;charset=utf-8" });
@@ -332,14 +434,15 @@
     disconnect(); clearTimeout(saveTimer); await saveChain; await chrome.storage.local.remove(STORE_KEY);
     state = freshState(); $("includeAuthor").checked = false; $("blockConfirmed").checked = false; render(); notice("已清除本機紀錄。");
   };
-  for (const id of ["target", "kind"]) $(id).addEventListener("change", () => { $("targetConfirmed").checked = false; $("scopeConfirmed").checked = false; $("includeAuthor").checked = false; $("blockConfirmed").checked = false; });
+  for (const id of ["target", "kind"]) $(id).addEventListener("change", resetApprovals);
   document.addEventListener("visibilitychange", () => { if (state.status === "collecting" && document.hidden) finish("paused", "分頁已移到背景。回到此分頁後手動繼續。"); });
-  for (const type of ["pointerdown", "click", "keydown", "wheel"]) document.addEventListener(type, event => {
-    if (state.status === "collecting" && !event.composedPath().includes(host)) finish("paused", "偵測到 Threads 頁面操作，已先暫停以避免切換名單時混入其他帳號。請核對原名單後繼續。");
+  document.addEventListener("click", event => {
+    if (state.status !== "collecting" || event.composedPath().includes(host) || scope?.contains(event.target)) return;
+    if (event.target instanceof Element && event.target.closest('button,[role="button"],[role="tab"],a[href]')) finish("paused", "偵測到名單外的頁面控制操作，已暫停。可繼續原名單或結束並檢查已收集結果。");
   }, { capture: true, passive: true });
   window.addEventListener("pagehide", () => { if (state.status === "collecting") finish("paused", "頁面已離開，收集暫停。"); pauseBlockingOnLeave(); });
   globalThis.__threadsLikesProbe = { show() { host.style.display = "block"; if (scope?.isConnected) drawOutline(); } };
-  $("target").value = Core.canonicalTarget(location.href)?.url || "";
+  setDetectedTarget(detectedTarget());
   render();
   // Disable collection until restoration finishes, avoiding a late overwrite.
   $("start").disabled = true; $("pick").disabled = true;
@@ -347,12 +450,25 @@
     const saved = result[STORE_KEY];
     if (saved?.schemaVersion === 1 && saved.mode === "read-only-probe" && Array.isArray(saved.accounts) && Core.canonicalTarget(saved.target?.url)) {
       state = { ...freshState(), ...saved, target: { ...saved.target, ...Core.canonicalTarget(saved.target.url) }, accounts: Core.mergeAccounts(saved.accounts, [], saved.updatedAt || new Date().toISOString()).slice(0, 10000), status: "restored", completeness: "unknown", liveCompatibility: "not-verified" };
+      state.extensionVersion = "0.3.0"; state.limits = { maxAccounts: 10000, maxRunMs: 120000, noGrowthMs: 15000 };
       state.accounts = state.accounts.filter(a => a.username.toLowerCase() !== state.target.username.toLowerCase());
       const choices = Array.isArray(saved.blockSelection) ? new Set(saved.blockSelection) : null;
       state.blockSelection = state.accounts.filter(a => !choices || choices.has(a.username.toLowerCase())).map(a => a.username.toLowerCase());
       state.reason = "已還原資料。原頁面區域不會還原；請先匯出，或重新選擇來源並開始新收集。";
-      $("target").value = state.target.url; $("kind").value = state.target.kind === "reply" ? "reply" : "post";
+      if (!$("target").value) $("sourceInfo").textContent = `已還原上次 @${state.target.username} 的名單。要開始新收集，請先選擇目前的貼文／留言。`;
+      $("kind").value = state.target.kind === "reply" ? "reply" : "post";
       $("declaredCount").value = state.target.declaredLikeCount ?? "";
     }
   }).catch(() => notice("無法讀取上次紀錄。新結果仍可匯出。")).finally(render);
+  let observedPage = pageIdentity();
+  setInterval(() => {
+    const currentPage = pageIdentity();
+    if (currentPage !== observedPage) {
+      observedPage = currentPage; pickedSourcePage = null;
+      if (state.status === "collecting") finish("paused", "來源頁面已改變，已保留目前收集結果。");
+      setDetectedTarget(detectedTarget()); render();
+    } else if (!$("target").value && !pickedSourcePage && !pickingTarget) {
+      const target = detectedTarget(); if (target) { setDetectedTarget(target); render(); }
+    }
+  }, 800);
 })();
