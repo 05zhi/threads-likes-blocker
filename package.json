@@ -1,0 +1,11 @@
+{
+  "name": "threads-likes-blocker",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Review visible Threads likers and explicitly block selected accounts using the website UI.",
+  "scripts": {
+    "test": "node --test tests/core.test.cjs tests/job.test.cjs tests/adapter.test.cjs tests/background.test.cjs tests/runner.test.cjs",
+    "test:browser": "node tests/browser.cjs"
+  },
+  "engines": { "node": ">=22" }
+}
