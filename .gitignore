@@ -8,3 +8,4 @@ threads-likes-*.json
 threads-likes-*.csv
 threads-block-*.json
 threads-block-*.csv
+threads-diagnostics-*.json
