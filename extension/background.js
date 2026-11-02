@@ -126,6 +126,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (!target || (!sameTarget(target, source) && !cardBinding)) throw new Error("來源頁面已改變，請重新選擇貼文或留言並確認名單。");
         job = Jobs.createJob({ accounts: message.accounts, target: message.target, includeAuthor: message.includeAuthor, actorUsername: message.actorUsername, sourceTabId: sender.tab.id }, now());
         job.sourcePage = sourcePage(sender.tab.url);
+        job.extensionVersion = chrome.runtime.getManifest?.()?.version || "unknown";
         await save(); kick();
       } else {
         if (!job) throw new Error("目前沒有封鎖工作。");
