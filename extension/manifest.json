@@ -1,0 +1,9 @@
+{
+  "manifest_version": 3,
+  "name": "Threads 按讚名單驗證工具（只讀）",
+  "version": "0.1.0",
+  "description": "第一階段可行性驗證：手動選定按讚名單，讀取帳號、去重及匯出。不含封鎖功能。",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "開啟 Threads 按讚名單驗證工具" }
+}

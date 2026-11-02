@@ -1,0 +1,10 @@
+# User exports, local verification records and browser profiles stay off GitHub.
+VERIFICATION.md
+evidence/
+work/
+node_modules/
+*.zip
+threads-likes-*.json
+threads-likes-*.csv
+threads-block-*.json
+threads-block-*.csv
