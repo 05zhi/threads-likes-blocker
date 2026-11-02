@@ -65,6 +65,35 @@ test('START treats post IDs as case-sensitive even when usernames differ only by
   const result=await h.message({...initial(),target:{url:'https://www.threads.com/@AUTHOR/post/test'}});
   assert.equal(result.ok,false);assert.equal(h.calls.some(c=>c.kind==='create'),false);
 });
+
+test('an explicitly selected post card can run from the confirmed feed without a typed permalink',async()=>{
+  const h=harness();await h.ready;
+  const feed={tab:{id:7,url:'https://www.threads.com/'}};
+  h.tabs.set(7,{...feed.tab,status:'complete'});
+  const result=await h.message({...initial(),accounts:[account('alice')],target:{...target,binding:'user-confirmed',sourcePage:'https://www.threads.com/'}},feed);
+  assert.equal(result.ok,true);assert.equal(result.job.sourcePage,'https://www.threads.com/');
+  await until(()=>h.job().status==='completed','feed-bound completion');assert.deepEqual(h.phases(),['prepare','confirm']);
+});
+
+test('feed selection binding cannot come from another page or a non-Threads origin',async()=>{
+  const h=harness();await h.ready;const feed={tab:{id:7,url:'https://www.threads.com/'}};
+  for(const sourcePage of ['https://evil.example/','https://www.threads.com/search']){
+    assert.equal((await h.message({...initial(),target:{...target,binding:'user-confirmed',sourcePage}},feed)).ok,false);
+  }
+  assert.equal((await h.message({...initial(),target:{...target,sourcePage:'https://www.threads.com/'}},feed)).ok,false);
+  assert.equal(h.calls.some(c=>c.kind==='create'),false);
+});
+
+test('feed-bound jobs pause on source navigation and require their original page to resume',async()=>{
+  const prepare=gate(),h=harness({adapter:()=>prepare.promise});await h.ready;
+  const feed={tab:{id:7,url:'https://www.threads.com/'}};h.tabs.set(7,{...feed.tab,status:'complete'});
+  await h.message({...initial(),target:{...target,binding:'user-confirmed',sourcePage:feed.tab.url}},feed);
+  await until(()=>h.phases().includes('prepare'),'feed preparation');
+  h.listeners.updated(7,{url:'https://www.threads.com/search'});await until(()=>h.job().status==='paused','feed navigation pause');
+  prepare.resolve([{result:{status:'prepared',confirmationToken:'p'}}]);await until(()=>h.job().current===null,'feed deferral');assert.deepEqual(h.phases(),['prepare']);
+  assert.equal((await h.message({type:'BLOCK_RESUME',actorUsername:'me'},{tab:{id:7,url:target.url}})).ok,false);
+  await h.message({type:'BLOCK_STOP'},feed);
+});
 test('runner prepares before confirming and processes a selected account once',async()=>{
   const h=harness();await h.ready;assert.equal((await h.message({...initial(),accounts:[account('alice')]})).ok,true);
   await until(()=>h.job()?.status==='completed','completion');

@@ -13,9 +13,18 @@ function safeOrigin(raw) {
 }
 function locked(task) { return task && (["running", "paused"].includes(task.status) || task.current != null); }
 function sameTarget(a, b) { return !!a && !!b && a.username.toLowerCase() === b.username.toLowerCase() && a.postId === b.postId; }
+function sourcePage(raw) {
+  if (!safeOrigin(raw)) return null;
+  return `https://www.threads.com${new URL(raw).pathname}`;
+}
+function sameSource(a, b) {
+  const left = Core.canonicalTarget(a), right = Core.canonicalTarget(b);
+  if (left || right) return sameTarget(left, right);
+  return !!sourcePage(a) && sourcePage(a) === sourcePage(b);
+}
 async function assertSource(task) {
   const tab = await chrome.tabs.get(task.sourceTabId);
-  if (!sameTarget(Core.canonicalTarget(tab.url), task.target)) throw new Error("來源分頁已關閉或離開原目標，尚未送出封鎖確認。");
+  if (!sameSource(tab.url, task.sourcePage || task.target.url)) throw new Error("來源分頁已關閉或離開原目標，尚未送出封鎖確認。");
 }
 async function save() { await chrome.storage.local.set({ [JOB_KEY]: job }); }
 function mutate(fn) { const result = serial.catch(() => {}).then(fn); serial = result.catch(() => {}); return result; }
@@ -113,16 +122,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (locked(job) || runner) throw new Error("已有工作仍在執行或收尾，請先完成或中止後稍候。");
         if (message.confirmed !== true) throw new Error("請先確認封鎖名單。");
         const target = Core.canonicalTarget(message.target?.url), source = Core.canonicalTarget(sender.tab.url);
-        if (!sameTarget(target, source)) throw new Error("請在目標貼文或留言的直接連結頁面開始。");
+        const cardBinding = message.target?.binding === "user-confirmed" && sameSource(message.target?.sourcePage, sender.tab.url);
+        if (!target || (!sameTarget(target, source) && !cardBinding)) throw new Error("來源頁面已改變，請重新選擇貼文或留言並確認名單。");
         job = Jobs.createJob({ accounts: message.accounts, target: message.target, includeAuthor: message.includeAuthor, actorUsername: message.actorUsername, sourceTabId: sender.tab.id }, now());
+        job.sourcePage = sourcePage(sender.tab.url);
         await save(); kick();
       } else {
         if (!job) throw new Error("目前沒有封鎖工作。");
         if (message.type === "BLOCK_PAUSE") job = Jobs.pause(job, now());
         else if (message.type === "BLOCK_STOP") job = Jobs.stop(job, now());
         else if (message.type === "BLOCK_RESUME") {
-          const source = Core.canonicalTarget(sender.tab.url);
-          if (!sameTarget(source, job.target) || String(message.actorUsername || "").trim().replace(/^@/, "").toLowerCase() !== job.actorUsername.toLowerCase()) throw new Error("請回原目標頁面，填入原登入帳號後繼續。");
+          if (!sameSource(sender.tab.url, job.sourcePage || job.target.url) || String(message.actorUsername || "").trim().replace(/^@/, "").toLowerCase() !== job.actorUsername.toLowerCase()) throw new Error("請回原來源頁面，填入原登入帳號後繼續。");
           job = Jobs.resume(job, now()); job.sourceTabId = sender.tab.id;
         } else throw new Error("無法辨識工作指令。");
         await save(); if (job.status === "running") kick();
@@ -144,8 +154,7 @@ chrome.tabs.onUpdated.addListener((tabId, changes) => {
   if (!changes.url) return;
   ready.then(() => mutate(async () => {
     if (job?.status === "running" && tabId === job.sourceTabId) {
-      const target = Core.canonicalTarget(changes.url);
-      if (!sameTarget(target, job.target)) { job = Jobs.pause(job, now()); job.reason = "來源頁面改變，工作已暫停。"; await save(); }
+      if (!sameSource(changes.url, job.sourcePage || job.target.url)) { job = Jobs.pause(job, now()); job.reason = "來源頁面改變，工作已暫停。"; await save(); }
     }
   })).catch(() => {});
 });
