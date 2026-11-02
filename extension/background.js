@@ -13,6 +13,10 @@ function safeOrigin(raw) {
 }
 function locked(task) { return task && (["running", "paused"].includes(task.status) || task.current != null); }
 function sameTarget(a, b) { return !!a && !!b && a.username.toLowerCase() === b.username.toLowerCase() && a.postId === b.postId; }
+async function assertSource(task) {
+  const tab = await chrome.tabs.get(task.sourceTabId);
+  if (!sameTarget(Core.canonicalTarget(tab.url), task.target)) throw new Error("來源分頁已關閉或離開原目標，尚未送出封鎖確認。");
+}
 async function save() { await chrome.storage.local.set({ [JOB_KEY]: job }); }
 function mutate(fn) { const result = serial.catch(() => {}).then(fn); serial = result.catch(() => {}); return result; }
 async function closeWorker(task) {
@@ -64,6 +68,7 @@ async function run() {
       const username = job.current, actorUsername = job.actorUsername;
       let submitted = false, result;
       try {
+        await assertSource(job);
         let tabId = job.workerTabId;
         if (Number.isInteger(tabId)) {
           if (workerOwnership?.tabId !== tabId || workerOwnership?.jobId !== taskId) tabId = null;
@@ -77,6 +82,7 @@ async function run() {
         await chrome.scripting.executeScript({ target: { tabId }, files: ["core.js", "block-adapter.js"] });
         result = await adapter(tabId, { username, actorUsername, phase: "prepare" });
         if (result.status === "prepared") {
+          await assertSource(job);
           const maySubmit = await mutate(async () => {
             if (job.id !== taskId || job.current !== username || job.status !== "running") return false;
             job.phase = "confirming"; job.updatedAt = now(); await save(); return true;
@@ -97,7 +103,7 @@ async function run() {
   } finally { if (job?.id === taskId && ["completed", "stopped"].includes(job.status)) await closeWorker(job); }
 }
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!message?.type?.startsWith("BLOCK_")) return;
+  if (typeof message?.type !== "string" || !message.type.startsWith("BLOCK_")) return;
   (async () => {
     await ready;
     if (!Number.isInteger(sender?.tab?.id) || !safeOrigin(sender.tab.url || sender.url)) throw new Error("只接受 Threads 分頁面板指令。");

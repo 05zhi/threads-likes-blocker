@@ -146,3 +146,19 @@ test('source navigation allows username case changes but pauses on a post ID cas
   assert.equal((await h.message({type:'BLOCK_RESUME',actorUsername:'me'},{tab:{id:7,url:'https://www.threads.com/@AUTHOR/post/test'}})).ok,false);
   await h.message({type:'BLOCK_STOP'});
 });
+test('a closed source tab is rechecked after prepare even when its removed event is missed',async()=>{
+  const prepare=gate(),h=harness({adapter:()=>prepare.promise});await h.ready;await h.message(initial());await until(()=>h.phases().includes('prepare'),'prepare');
+  h.tabs.delete(7); // Intentionally do not deliver tabs.onRemoved.
+  prepare.resolve([{result:{status:'prepared',confirmationToken:'p'}}]);
+  await until(()=>h.job().status==='paused'&&h.job().current===null,'missed source removal detection');
+  assert.deepEqual(h.phases(),['prepare']);assert.equal(h.job().items[0].status,'needs-attention');assert.equal(h.job().items[1].status,'pending');assert.match(h.job().items[0].reason,/尚未送出最後確認/);
+  await h.message({type:'BLOCK_STOP'},{tab:{id:8,url:target.url}});
+});
+test('a changed source URL is rechecked after prepare even when its updated event is missed',async()=>{
+  const prepare=gate(),h=harness({adapter:()=>prepare.promise});await h.ready;await h.message(initial());await until(()=>h.phases().includes('prepare'),'prepare');
+  h.tabs.set(7,{id:7,url:'https://www.threads.com/@author/post/OTHER',status:'complete'}); // No tabs.onUpdated.
+  prepare.resolve([{result:{status:'prepared',confirmationToken:'p'}}]);
+  await until(()=>h.job().status==='paused'&&h.job().current===null,'missed source navigation detection');
+  assert.deepEqual(h.phases(),['prepare']);assert.equal(h.job().items[0].status,'needs-attention');assert.equal(h.job().items[1].status,'pending');assert.match(h.job().items[0].reason,/來源分頁/);
+  await h.message({type:'BLOCK_STOP'});
+});
