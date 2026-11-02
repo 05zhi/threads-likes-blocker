@@ -56,8 +56,8 @@ class CDP {
     const setup = seed => `
       globalThis.__threadsProbeTabId=123;
       globalThis.__saved=${JSON.stringify(seed||{})};
-      globalThis.__messages=[];globalThis.__mockJob=null;globalThis.__confirmAllowed=true;globalThis.__confirmCalls=[];
-      globalThis.__deferStartResponse=false;globalThis.__pendingStartResponse=null;globalThis.__deferGetResponses=false;globalThis.__pendingGetResponses=[];
+      globalThis.__messages=[];globalThis.__mockJob=null;globalThis.__confirmAllowed=true;globalThis.__confirmCalls=[];globalThis.__actorUsername='owner';
+      globalThis.__deferStartResponse=false;globalThis.__pendingStartResponse=null;globalThis.__deferGetResponses=false;globalThis.__pendingGetResponses=[];globalThis.__deferActorResponse=false;globalThis.__pendingActorResponse=null;
       globalThis.confirm=message=>{__confirmCalls.push(message);return __confirmAllowed};
       globalThis.__originalCreateURL=URL.createObjectURL.bind(URL);
       URL.createObjectURL=blob=>{globalThis.__exportBlob=blob;return __originalCreateURL(blob)};
@@ -65,6 +65,7 @@ class CDP {
         storage:{local:{get:async k=>({[k]:__saved[k]}),set:async o=>{Object.assign(__saved,JSON.parse(JSON.stringify(o)))},remove:async k=>{delete __saved[k]}}},
         runtime:{sendMessage:async message=>{
           __messages.push(JSON.parse(JSON.stringify(message)));
+          if(message.type==='BLOCK_ACTOR'){const result=__actorUsername?{ok:true,actorUsername:__actorUsername}:{ok:false,error:'Cannot read the signed-in actor'};if(__deferActorResponse)return new Promise(resolve=>{__pendingActorResponse=()=>resolve(result)});return result;}
           if(message.type==='BLOCK_START'){
             __mockJob={schemaVersion:1,id:'fixture-job',status:'running',current:null,reason:'Simulated runtime response only',actorUsername:message.actorUsername,target:message.target,includeAuthor:message.includeAuthor,items:message.accounts.map(account=>({...account,role:'liker',status:'pending',reason:''}))};
             if(message.includeAuthor&&message.target.username.toLowerCase()!==message.actorUsername.toLowerCase())__mockJob.items.push({username:message.target.username,role:'author',status:'pending',reason:''});
@@ -82,9 +83,11 @@ class CDP {
     const click = id => cdp.eval(`${ui}.getElementById(${JSON.stringify(id)}).click()`);
     const status=()=>cdp.eval(`${ui}.getElementById('status').textContent`);
     const snapshot=()=>cdp.eval(`Object.values(__saved).find(x=>x?.mode==='read-only-probe')`);
-    await check('source is automatically read from canonical and is read-only without manual URL entry',async()=>{
-      assert.equal(await cdp.eval(`${ui}.getElementById('target').readOnly`),true);assert.equal(await cdp.eval(`${ui}.getElementById('target').value`),'https://www.threads.com/@author/post/TEST');assert.match(await cdp.eval(`${ui}.getElementById('sourceInfo').textContent`),/自動辨識 @author/);
+    await check('source and actor are automatic with no type or optional input fields',async()=>{
+      assert.equal(await cdp.eval(`${ui}.getElementById('target').type`),'hidden');assert.equal(await cdp.eval(`${ui}.getElementById('target').value`),'https://www.threads.com/@author/post/TEST');assert.match(await cdp.eval(`${ui}.getElementById('sourceInfo').textContent`),/自動辨識 @author/);assert.match(await cdp.eval(`${ui}.getElementById('actorInfo').textContent`),/@owner/);
+      assert.equal(await cdp.eval(`${ui}.querySelectorAll('#kind,#declaredCount,#actor,#targetConfirmed').length`),0);assert.equal(await cdp.eval(`${ui}.getElementById('tools').open`),false);assert.equal(await cdp.eval(`${ui}.getElementById('blockingStep').hidden`),true);
       assert.equal(await cdp.eval(`getComputedStyle(${ui}.querySelector('section:not([hidden])')).borderTopWidth`),'1px');
+      assert.equal(await cdp.eval(`(()=>{const section=${ui}.getElementById('sourceStep');return section.lastElementChild.getBoundingClientRect().bottom<=section.getBoundingClientRect().bottom})()`),true);
     });
     await check('feed card picking reads the clicked card timestamp and resets old approvals',async()=>{
       await cdp.eval(`document.body.insertAdjacentHTML('beforeend','<article id="reply-card"><header><a href="https://www.threads.com/@writer/post/REPLY"><time>1分</time></a></header><p id="reply-body">選這則回覆</p></article>');${ui}.getElementById('includeAuthor').checked=true;${ui}.getElementById('blockConfirmed').checked=true`);
@@ -96,7 +99,7 @@ class CDP {
       await cdp.eval(`document.body.insertAdjacentHTML('beforeend','<article id="ambiguous-card"><a href="https://www.threads.com/@parent/post/ONE"><time>2分</time></a><p id="ambiguous-body">多個來源</p><article><a href="https://www.threads.com/@child/post/TWO"><time>1分</time></a></article></article>')`);
       await click('pickTarget');await cdp.eval(`document.querySelector('#ambiguous-body').click()`);assert.match(await cdp.eval(`${ui}.getElementById('notice').textContent`),/未能唯一辨識/);assert.equal(await cdp.eval(`${ui}.getElementById('target').value`),'https://www.threads.com/@author/post/TEST');await click('cancelTarget');await cdp.eval(`document.querySelector('#ambiguous-card').remove()`);
     });
-    await check('source and scope confirmations required',async()=>{
+    await check('one combined source and scope confirmation is required',async()=>{
       await click('start');
       assert.match(await cdp.eval(`${ui}.getElementById('notice').textContent`),/勾選/); assert.equal(await status(),'尚未開始');
     });
@@ -110,14 +113,14 @@ class CDP {
       const positions=await cdp.eval(`({outline:document.querySelector('#threads-likes-probe-outline').getBoundingClientRect().top,list:document.querySelector('#list').getBoundingClientRect().top})`);assert.ok(Math.abs(positions.outline-positions.list)<2);await cdp.eval(`document.querySelector('#dialog').style.marginTop='';window.dispatchEvent(new Event('resize'))`);await delay(50);
       await cdp.call('Page.captureScreenshot',{format:'png'}).then(r=>fs.writeFile(path.join(scratch,'outline-preview.png'),Buffer.from(r.data,'base64')));
     });
-    await cdp.eval(`${ui}.getElementById('targetConfirmed').checked=true;${ui}.getElementById('scopeConfirmed').checked=true;${ui}.getElementById('kind').value='reply'`);
+    await cdp.eval(`${ui}.getElementById('scopeConfirmed').checked=true`);
     await check('changing activity after selection requires selecting the scope again',async()=>{
       await cdp.eval(`document.querySelector('#dialog h2').textContent='轉發'`);await click('start');assert.equal(await status(),'尚未開始');assert.match(await cdp.eval(`${ui}.getElementById('notice').textContent`),/失效/);
       await cdp.eval(`document.querySelector('#dialog h2').textContent='按讚'`);
     });
     await click('start');await delay(1200);
     await check('only scoped visible profile URLs collected with case-insensitive dedup',async()=>{
-      const s=await snapshot();assert.deepEqual(s.accounts.map(a=>a.username.toLowerCase()).sort(),['alice','bob']);assert.equal(s.target.kind,'reply');assert.equal(s.completeness,'unknown');assert.equal(s.liveCompatibility,'not-verified');
+      const s=await snapshot();assert.deepEqual(s.accounts.map(a=>a.username.toLowerCase()).sort(),['alice','bob']);assert.equal(s.target.kind,'post');assert.equal(s.completeness,'unknown');assert.equal(s.liveCompatibility,'not-verified');
     });
     await check('author in the selected DOM region is excluded from collected likers',async()=>{
       assert.ok(await cdp.eval(`!!document.querySelector('#list a[href="https://www.threads.com/@author"]')`));
@@ -181,22 +184,21 @@ class CDP {
     await cdp.call('Page.navigate',{url:pageUrl});
     for(let i=0;i<50;i++){if(await cdp.eval(`document.readyState==='complete' && !!document.querySelector('#list')`))break;await delay(100);}
     await cdp.eval(setup({'threadsLikesProbe.snapshot.v1.tab.123':legacySnapshot}));await cdp.eval(core);await cdp.eval(content);await delay(150);
-    const field = (id,value) => cdp.eval(`(()=>{const e=${ui}.getElementById(${JSON.stringify(id)});e.value=${JSON.stringify(value)};e.dispatchEvent(new Event('input',{bubbles:true}));})()`);
     const summary=()=>cdp.eval(`${ui}.getElementById('selectionSummary').textContent`);
-    const messages=()=>cdp.eval(`__messages.filter(m=>m.type!=='BLOCK_GET')`);
+    const messages=()=>cdp.eval(`__messages.filter(m=>!['BLOCK_GET','BLOCK_ACTOR'].includes(m.type))`);
     const selectRow=username=>cdp.eval(`${ui}.querySelector('input[aria-label="選取 @${username}"]').click()`);
     await check('legacy exports remove the source author on restore and leave author opt-in off',async()=>{
       await click('json');const exported=await cdp.eval(`__exportBlob.text().then(JSON.parse)`);
       assert.deepEqual(exported.accounts.map(a=>a.username),['alice','bob','owner']);
       assert.equal(await cdp.eval(`${ui}.getElementById('includeAuthor').checked`),false);
       assert.equal(await cdp.eval(`${ui}.getElementById('blockConfirmed').checked`),false);
-      assert.match(await summary(),/已選 3 個按讚帳號/);
+      assert.match(await summary(),/已選 2 個按讚帳號/);
     });
     await check('select-none and select-all update every row and invalidate confirmation',async()=>{
       await cdp.eval(`${ui}.getElementById('blockConfirmed').checked=true`);await click('selectNone');
       assert.equal(await cdp.eval(`${ui}.querySelectorAll('#accounts input:checked').length`),0);assert.match(await summary(),/已選 0 個/);
       assert.equal(await cdp.eval(`${ui}.getElementById('blockConfirmed').checked`),false);
-      await click('selectAll');assert.equal(await cdp.eval(`${ui}.querySelectorAll('#accounts input:checked').length`),3);assert.match(await summary(),/已選 3 個/);
+      await click('selectAll');assert.equal(await cdp.eval(`${ui}.querySelectorAll('#accounts input:checked').length`),3);assert.match(await summary(),/已選 2 個/);
     });
     await check('individual checkbox selection updates the payload selection independently',async()=>{
       await click('selectNone');await selectRow('alice');assert.equal(await cdp.eval(`${ui}.querySelectorAll('#accounts input:checked').length`),1);assert.match(await summary(),/已選 1 個/);
@@ -206,15 +208,18 @@ class CDP {
       await click('includeAuthor');assert.match(await summary(),/1 個按讚帳號 ＋ 1 位作者/);assert.equal(await cdp.eval(`${ui}.querySelectorAll('#accounts input').length`),3);
       await click('includeAuthor');assert.doesNotMatch(await summary(),/＋ 1 位作者/);
     });
-    await check('the signed-in self is excluded from the preview and author-self is never added',async()=>{
-      await click('selectAll');await field('actor','owner');assert.match(await summary(),/已選 2 個/);
-      await click('includeAuthor');await field('actor','author');assert.doesNotMatch(await summary(),/＋ 1 位作者/);
-      await field('actor','owner');assert.match(await summary(),/已選 2 個按讚帳號 ＋ 1 位作者/);
+    await check('automatic actor changes invalidate approval and never add the signed-in self',async()=>{
+      await click('selectAll');assert.match(await summary(),/已選 2 個/);
+      await click('includeAuthor');await click('blockConfirmed');await cdp.eval(`__actorUsername='author'`);await click('blockStart');await delay(100);assert.doesNotMatch(await summary(),/＋ 1 位作者/);assert.equal(await cdp.eval(`${ui}.getElementById('blockConfirmed').checked`),false);assert.equal((await messages()).length,0);assert.match(await cdp.eval(`${ui}.getElementById('notice').textContent`),/登入帳號或目標已改變/);
+      await cdp.eval(`__actorUsername='owner'`);await click('blockConfirmed');await click('blockStart');await delay(100);assert.match(await summary(),/已選 2 個按讚帳號 ＋ 1 位作者/);assert.equal((await messages()).length,0);
     });
-    await check('blocking requires the separate checkbox and final confirmation',async()=>{
+    await check('blocking requires list approval without a duplicate confirmation dialog',async()=>{
       await click('blockStart');assert.match(await cdp.eval(`${ui}.getElementById('notice').textContent`),/勾選封鎖確認/);assert.equal((await messages()).length,0);
-      await click('blockConfirmed');await cdp.eval('__confirmAllowed=false');await click('blockStart');await delay(50);assert.equal((await messages()).length,0);
-      assert.match(await cdp.eval('__confirmCalls.at(-1)'),/@owner 封鎖 3 個帳號/);await cdp.eval('__confirmAllowed=true');
+      assert.equal(await cdp.eval(`${ui}.getElementById('blockStart').textContent`),'一鍵封鎖 3 個帳號');assert.equal(await cdp.eval('__confirmCalls.length'),0);
+    });
+    await check('a missing actor disables blocking and can be rechecked without a text field',async()=>{
+      await click('blockConfirmed');await cdp.eval('__actorUsername=null');await click('blockStart');await delay(100);assert.equal((await messages()).length,0);assert.equal(await cdp.eval(`${ui}.getElementById('blockStart').disabled`),true);assert.equal(await cdp.eval(`${ui}.getElementById('blockConfirmed').checked`),false);assert.equal(await cdp.eval(`${ui}.getElementById('refreshActor').hidden`),false);
+      await cdp.eval(`__actorUsername='owner'`);await click('refreshActor');await delay(100);assert.equal(await cdp.eval(`${ui}.getElementById('blockStart').disabled`),false);assert.equal(await cdp.eval(`${ui}.getElementById('refreshActor').hidden`),true);
     });
     await check('BLOCK_START sends a frozen selected-list payload to the mock runtime only',async()=>{
       await click('selectNone');await selectRow('alice');await click('blockConfirmed');await click('blockStart');await delay(100);
@@ -233,11 +238,11 @@ class CDP {
       await click('blockExport');const exported=await cdp.eval(`__exportBlob.text().then(JSON.parse)`);assert.equal(exported.id,'fixture-job');assert.equal(exported.status,'stopped');assert.deepEqual(exported.items.map(a=>[a.username,a.role,a.status]),[['alice','liker','cancelled'],['author','author','cancelled']]);assert.ok(exported.exportedAt);assert.equal((await messages()).length,4);
     });
     await check('combined diagnostic export includes collector, blocking job and extension version',async()=>{
-      await click('diagnostics');const exported=await cdp.eval(`__exportBlob.text().then(JSON.parse)`);assert.equal(exported.extensionVersion,'0.3.1');assert.equal(exported.collector.target.postId,'TEST');assert.equal(exported.blockingJob.id,'fixture-job');assert.equal(exported.blockingJob.status,'stopped');assert.ok(exported.exportedAt);assert.equal((await messages()).length,4);
+      await click('diagnostics');const exported=await cdp.eval(`__exportBlob.text().then(JSON.parse)`);assert.equal(exported.extensionVersion,'0.4.0');assert.equal(exported.collector.target.postId,'TEST');assert.equal(exported.blockingJob.id,'fixture-job');assert.equal(exported.blockingJob.status,'stopped');assert.ok(exported.exportedAt);assert.equal((await messages()).length,4);
     });
-    await cdp.eval(`${ui}.querySelector('main').scrollTop=${ui}.querySelector('main').scrollHeight`);
+    await cdp.eval(`${ui}.querySelector('main').scrollTop=${ui}.querySelector('main').scrollHeight`);await delay(120);
     await cdp.call('Page.captureScreenshot',{format:'png'}).then(r=>fs.writeFile(path.join(scratch,'blocking-preview.png'),Buffer.from(r.data,'base64')));
-    await cdp.eval(`${ui}.querySelector('main').scrollTop=0`);
+    await cdp.eval(`${ui}.querySelector('main').scrollTop=0`);await delay(120);
     await cdp.call('Page.captureScreenshot',{format:'png'}).then(r=>fs.writeFile(path.join(scratch,'fixture-preview.png'),Buffer.from(r.data,'base64')));
     await check('editing the source resets author opt-in and the blocking confirmation',async()=>{
       await cdp.eval(`${ui}.getElementById('includeAuthor').checked=true;${ui}.getElementById('blockConfirmed').checked=true;${ui}.getElementById('target').value='https://www.threads.com/@another/post/OTHER';${ui}.getElementById('target').dispatchEvent(new Event('change',{bubbles:true}))`);
@@ -246,7 +251,7 @@ class CDP {
     });
     await check('a new collection resets previous author and blocking approvals',async()=>{
       await click('pick');await cdp.eval(`document.querySelector('#list a').click()`);
-      await cdp.eval(`${ui}.getElementById('targetConfirmed').checked=true;${ui}.getElementById('scopeConfirmed').checked=true;${ui}.getElementById('includeAuthor').checked=true;${ui}.getElementById('blockConfirmed').checked=true`);
+      await cdp.eval(`${ui}.getElementById('scopeConfirmed').checked=true;${ui}.getElementById('includeAuthor').checked=true;${ui}.getElementById('blockConfirmed').checked=true`);
       await click('start');await delay(150);assert.equal(await cdp.eval(`${ui}.getElementById('includeAuthor').checked`),false);assert.equal(await cdp.eval(`${ui}.getElementById('blockConfirmed').checked`),false);await click('stop');
     });
     await check('clearing collection data resets author and blocking approvals',async()=>{
@@ -259,8 +264,19 @@ class CDP {
       await cdp.eval(setup({'threadsLikesProbe.snapshot.v1.tab.123':legacySnapshot}));
       if(deferGet)await cdp.eval('__deferGetResponses=true');
       await cdp.eval(core);await cdp.eval(content);await delay(150);
-      await field('actor','owner');await click('selectNone');await selectRow('alice');await click('blockConfirmed');
+      await click('selectNone');await selectRow('alice');await click('blockConfirmed');
     }
+    await check('closing during the actor recheck never dispatches START and disables selection changes',async()=>{
+      await freshLegacyPanel();await cdp.eval('__deferActorResponse=true');await click('blockStart');await delay(50);assert.equal(await cdp.eval('typeof __pendingActorResponse'),'function');assert.equal(await cdp.eval(`${ui}.getElementById('pickTarget').disabled`),true);assert.equal(await cdp.eval(`${ui}.getElementById('selectAll').disabled`),true);assert.equal(await cdp.eval(`${ui}.getElementById('clear').disabled`),true);assert.equal(await cdp.eval(`${ui}.querySelector('#accounts input').disabled`),true);
+      await click('close');await cdp.eval('__deferActorResponse=false;__pendingActorResponse()');await delay(100);assert.equal((await messages()).length,0);await cdp.eval(content);assert.equal(await cdp.eval(`${ui}.getElementById('blockConfirmed').checked`),false);
+    });
+    await check('closing navigating or stopping during a resume actor recheck never dispatches RESUME',async()=>{
+      for(const leave of ['close','navigate','stop']){
+        await freshLegacyPanel();await click('blockStart');await delay(80);await click('blockPause');await delay(80);await cdp.eval('__deferActorResponse=true');await click('blockResume');await delay(50);assert.equal(await cdp.eval('typeof __pendingActorResponse'),'function');
+        if(leave==='close')await click('close');else if(leave==='stop'){await click('blockStop');await delay(80);}else await cdp.eval(`history.pushState({},'', '/different-source')`);
+        await cdp.eval('__deferActorResponse=false;__pendingActorResponse()');await delay(100);assert.deepEqual((await messages()).map(m=>m.type),leave==='stop'?['BLOCK_START','BLOCK_PAUSE','BLOCK_STOP']:['BLOCK_START','BLOCK_PAUSE']);assert.equal(await cdp.eval('__mockJob.status'),leave==='stop'?'stopped':'paused');
+      }
+    });
     await check('closing the panel before START responds pauses the newly returned job',async()=>{
       await freshLegacyPanel();await cdp.eval('__deferStartResponse=true');await click('blockStart');await delay(50);
       assert.equal(await cdp.eval('typeof __pendingStartResponse'),'function');
@@ -285,7 +301,7 @@ class CDP {
       await cdp.call('Page.navigate',{url:pageUrl});await delay(100);
       for(let i=0;i<50;i++){if(await cdp.eval(`document.readyState==='complete' && !!document.querySelector('#list')`))break;await delay(100);}
       await cdp.eval(setup());if(route)await cdp.eval(`history.replaceState({},'',${JSON.stringify(route)})`);await cdp.eval(core);await cdp.eval(content);await delay(120);
-      await click('pick');await cdp.eval(`document.querySelector('#list a').click();${ui}.getElementById('targetConfirmed').checked=true;${ui}.getElementById('scopeConfirmed').checked=true`);
+      await click('pick');await cdp.eval(`document.querySelector('#list a').click();${ui}.getElementById('scopeConfirmed').checked=true`);
     }
     await check('manual wheel scrolling does not pause collection and partial results can be reviewed',async()=>{
       await freshCollector();await click('start');await delay(250);await cdp.eval(`document.querySelector('#list').dispatchEvent(new WheelEvent('wheel',{bubbles:true,deltaY:120}))`);await delay(100);assert.equal(await status(),'收集中');
