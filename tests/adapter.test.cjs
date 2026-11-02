@@ -32,13 +32,14 @@ class Document extends Element {
 }
 function fixture(options={}){
   nextTop=0;
-  const doc=new Document(),nav=new Element('nav'),actor=new Element('a',{'href':'/@owner','aria-label':'Profile'}),main=new Element('main'),header=new Element('div'),identity=new Element('h2',{},'victim'),more=new Element('button',{'aria-label':'More','aria-haspopup':'menu'}),article=new Element('article');
+  const doc=new Document(),nav=new Element('nav'),actor=new Element('a',{'href':'/@owner','aria-label':'Profile'}),main=new Element(options.mainTag||'main'),header=new Element('div'),identity=new Element(options.usernameTag||'h2',{},'victim'),more=new Element('button',{'aria-label':'More','aria-haspopup':options.popup||'menu'}),article=new Element('article');
   doc.append(nav.append(actor),main.append(header.append(identity,more),article.append(new Element('a',{href:'/@victim/post/POST'},'victim post'),new Element('button',{'aria-label':'More'}))));
   let location='https://www.threads.com/@victim',time=0,finalClicks=0,menuClicks=0,optionClicks=0;
   let dialog=null,confirmButton=null;
   more.onClick=()=>{
     menuClicks++;
-    const menu=new Element('div',{role:'menu'}),option=new Element('button',{role:'menuitem'},options.unblockMenu?'Unblock':'Block');doc.append(menu.append(option));
+    const menu=new Element('div',{role:options.actionsRole||'menu'},options.actionsText||''),option=new Element('button',{role:'menuitem'},options.unblockMenu?'Unblock':'Block');doc.append(menu.append(option));
+    if(options.actionsRole==='dialog'&&!options.noOtherAction)menu.append(new Element('button',{},'Mute'));
     option.onClick=()=>{
       optionClicks++;menu.remove();dialog=new Element('div',{role:'dialog'},options.mention??'Block @victim?');
       confirmButton=new Element('button',{},'Block');dialog.append(confirmButton);
@@ -48,10 +49,15 @@ function fixture(options={}){
     };
   };
   if(options.alreadyBlocked)header.append(new Element('button',{},'Unblock'));
+  if(options.withoutMore)more.remove();
+  if(options.depth){identity.remove();let parent=header;for(let i=0;i<options.depth;i++){const wrapper=new Element('div');parent.append(wrapper);parent=wrapper;}parent.append(identity);}
+  if(options.headerPostLink)header.append(new Element('a',{href:'/@victim/post/PINNED'},'Pinned post'));
   if(options.feedOnly){more.remove();identity.remove();article.append(new Element('h2',{},'victim'));}
-  const adapter=Adapter.createAdapter({document:doc,href:()=>location,getComputedStyle:()=>({}),now:()=>time,delay:async ms=>{time+=ms;},token:()=>`nonce-${time}`});
+  if(options.hydrateHeader)header.remove();
+  if(options.hydrateActor)actor.remove();
+  const adapter=Adapter.createAdapter({document:doc,href:()=>location,getComputedStyle:()=>({}),now:()=>time,delay:async ms=>{time+=ms;if(time>=600){if(options.hydrateHeader&&!header.isConnected&&!options.neverHydrate)main.append(header);if(options.hydrateActor&&!actor.isConnected)nav.append(actor);if(options.changeActorDuringHydration)actor.attrs.href='/@someone_else';}},token:()=>`nonce-${time}`});
   const args={username:'victim',actorUsername:'owner'};
-  return {doc,nav,actor,main,header,more,identity,adapter,args,get dialog(){return dialog;},get confirmButton(){return confirmButton;},counts:()=>({finalClicks,menuClicks,optionClicks}),setLocation:value=>{location=value;}};
+  return {doc,nav,actor,main,header,more,identity,adapter,args,get dialog(){return dialog;},get confirmButton(){return confirmButton;},get elapsed(){return time;},counts:()=>({finalClicks,menuClicks,optionClicks}),setLocation:value=>{location=value;}};
 }
 
 test('profile URLs accept only exact HTTPS Threads profiles',()=>{
@@ -103,4 +109,48 @@ test('a sent block without clear unblock evidence is unknown and not retried',as
 });
 test('rate limiting after the final click yields unknown, not success',async()=>{
   const f=fixture({barrierAfterClick:true}),p=await f.adapter.perform({...f.args,phase:'prepare'}),r=await f.adapter.perform({...f.args,phase:'confirm',confirmationToken:p.confirmationToken});assert.equal(r.status,'unknown');assert.match(r.reason,/操作限制/);assert.equal(f.counts().finalClicks,1);
+});
+
+test('profile headers do not require main semantics or heading-only username tags',async()=>{
+  for(const options of [{mainTag:'div'},{mainTag:'div',usernameTag:'div'},{mainTag:'div',usernameTag:'span',depth:12,popup:'dialog'}]){
+    const f=fixture(options),r=await f.adapter.perform({...f.args,phase:'prepare'});assert.equal(r.status,'prepared');assert.equal(f.counts().finalClicks,0);assert.equal(r.evidence.diagnostics.profileHeaderCandidateCount,1);
+  }
+});
+
+test('navigation, recommendations and post identities cannot supply profile actions',async()=>{
+  const f=fixture({feedOnly:true,mainTag:'div'});f.nav.append(new Element('span',{},'victim'),new Element('button',{'aria-label':'More'}));
+  f.doc.append(new Element('aside').append(new Element('span',{},'victim'),new Element('button',{'aria-label':'More'})));
+  assert.equal((await f.adapter.perform({...f.args,phase:'prepare'})).status,'needs-attention');assert.equal(f.counts().menuClicks,0);
+  const linked=fixture({headerPostLink:true});assert.equal((await linked.adapter.perform({...linked.args,phase:'prepare'})).status,'needs-attention');assert.equal(linked.counts().menuClicks,0);
+});
+
+test('ambiguous independent profile headers fail closed',async()=>{
+  const f=fixture({mainTag:'div'});f.main.append(new Element('div').append(new Element('span',{},'victim'),new Element('button',{'aria-label':'More'})));
+  assert.equal(f.adapter.inspect(f.args).profileHeaderCandidateCount,2);assert.equal((await f.adapter.perform({...f.args,phase:'prepare'})).status,'needs-attention');assert.equal(f.counts().menuClicks,0);
+});
+
+test('an already-blocked profile without a More menu is safely skipped',async()=>{
+  const f=fixture({mainTag:'div',alreadyBlocked:true,withoutMore:true});assert.equal((await f.adapter.perform({...f.args,phase:'prepare'})).status,'already-blocked');assert.deepEqual(f.counts(),{finalClicks:0,menuClicks:0,optionClicks:0});
+});
+
+test('profile actions support role dialog without mistaking it for final confirmation',async()=>{
+  const f=fixture({popup:'dialog',actionsRole:'dialog',actionsText:'Actions for @victim'}),p=await f.adapter.perform({...f.args,phase:'prepare'});
+  assert.equal(p.status,'prepared');assert.equal(f.counts().finalClicks,0);assert.equal(f.counts().optionClicks,1);
+  assert.equal((await f.adapter.perform({...f.args,phase:'confirm',confirmationToken:p.confirmationToken})).status,'success');
+  const ambiguous=fixture({actionsRole:'dialog',actionsText:'Block @victim?',noOtherAction:true});assert.equal((await ambiguous.adapter.perform({...ambiguous.args,phase:'prepare'})).status,'needs-attention');assert.equal(ambiguous.counts().optionClicks,0);
+});
+
+test('confirmation accepts a bounded exact username with or without at-sign',async()=>{
+  for(const mention of ['Block victim?','封鎖 victim？','Block @victim?']){const f=fixture({mention}),p=await f.adapter.perform({...f.args,phase:'prepare'});assert.equal(p.status,'prepared');assert.equal((await f.adapter.perform({...f.args,phase:'confirm',confirmationToken:p.confirmationToken})).status,'success');}
+  for(const mention of ['Block victim.other?','Block victim_2?','Block other_victim?','Block thisvictim?']){const f=fixture({mention});assert.equal((await f.adapter.perform({...f.args,phase:'prepare'})).status,'needs-attention');assert.equal(f.counts().finalClicks,0);}
+});
+
+test('preparation waits for React header and actor hydration without clicking early',async()=>{
+  const f=fixture({mainTag:'div',hydrateHeader:true,hydrateActor:true}),r=await f.adapter.perform({...f.args,phase:'prepare'});assert.equal(r.status,'prepared');assert.ok(f.elapsed>=600&&f.elapsed<8000);assert.equal(f.counts().finalClicks,0);
+  const absent=fixture({hydrateHeader:true,neverHydrate:true}),missing=await absent.adapter.perform({...absent.args,phase:'prepare'});assert.equal(missing.status,'needs-attention');assert.ok(absent.elapsed>=8000);assert.match(missing.reason,/profile-hydration/);
+});
+
+test('a changed actor during hydration fails immediately and inspect is read-only',async()=>{
+  const f=fixture({hydrateHeader:true,neverHydrate:true,changeActorDuringHydration:true}),r=await f.adapter.perform({...f.args,phase:'prepare'});assert.equal(r.status,'needs-attention');assert.match(r.reason,/登入帳號已改變/);assert.ok(f.elapsed<8000);assert.equal(f.counts().menuClicks,0);
+  const ready=fixture({mainTag:'div',popup:'dialog'}),d=ready.adapter.inspect(ready.args);assert.equal(d.mainCount,0);assert.equal(d.profileHeaderCandidateCount,1);assert.equal(d.hasProfileMenu,true);assert.equal(d.menuPopup,'dialog');assert.equal(d.actorMatches,true);assert.deepEqual(ready.counts(),{finalClicks:0,menuClicks:0,optionClicks:0});assert.equal(Object.hasOwn(d,'html'),false);
 });
