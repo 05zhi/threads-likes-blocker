@@ -1,9 +1,10 @@
 (function (root) {
   "use strict";
-  if (root.ThreadsBlockAdapter?.version === 2) return;
+  if (root.ThreadsBlockAdapter?.version === 3) return;
   const USER = /^[A-Za-z0-9._]{1,30}$/;
   const HOSTS = new Set(["threads.com", "www.threads.com", "threads.net", "www.threads.net"]);
   const PROFILE_LABELS = new Set(["profile", "個人檔案", "个人主页", "個人主頁", "个人资料"]);
+  const COLUMN_TITLE_LABELS = new Set(["直欄標題", "直栏标题", "column header", "column title"]);
   const MORE_LABELS = new Set(["more", "more options", "options", "更多", "更多選項", "更多选项"]);
   const BLOCK_LABELS = new Set(["block", "封鎖", "封锁"]);
   const UNBLOCK_LABELS = new Set(["unblock", "解除封鎖", "解除封锁", "取消封鎖", "取消封锁"]);
@@ -77,6 +78,10 @@
       const excluded = 'nav,[role="navigation"],article,[role="article"],aside,[role="complementary"],[role="dialog"],[role="menu"]';
       const identities = all(doc, 'h1,h2,h3,span,div,[role="heading"]').filter(element => {
         if (!visible(element) || !exact.has(low(text(element))) || element.closest?.(excluded)) return false;
+        // Logged-in desktop columns repeat the username in a navigation title.
+        // Its More opens column controls, not the account actions menu.
+        const titleLink = element.closest?.('a[aria-label]');
+        if (titleLink && COLUMN_TITLE_LABELS.has(low(titleLink.getAttribute('aria-label')))) return false;
         // Prefer the actual username leaf, avoiding incidental wrapper text.
         return !Array.from(element.children || []).some(child => visible(child) && exact.has(low(text(child))));
       });
@@ -219,7 +224,7 @@
     return Object.freeze({ perform, readableActorFromNavigation, profileScope, targetDialog, inspect });
   }
   let live;
-  const api = Object.freeze({ version: 2, profileUsernameFromUrl, exactAccessibleText, createAdapter, perform(args) { live ||= createAdapter({ document: root.document, location: root.location }); return live.perform(args); }, inspect(args) { live ||= createAdapter({ document: root.document, location: root.location }); return live.inspect(args); }, readableActorFromNavigation() { live ||= createAdapter({ document: root.document, location: root.location }); return live.readableActorFromNavigation(); } });
+  const api = Object.freeze({ version: 3, profileUsernameFromUrl, exactAccessibleText, createAdapter, perform(args) { live ||= createAdapter({ document: root.document, location: root.location }); return live.perform(args); }, inspect(args) { live ||= createAdapter({ document: root.document, location: root.location }); return live.inspect(args); }, readableActorFromNavigation() { live ||= createAdapter({ document: root.document, location: root.location }); return live.readableActorFromNavigation(); } });
   root.ThreadsBlockAdapter = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

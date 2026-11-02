@@ -41,6 +41,10 @@ async function run() {
       await check(`${name}: read-only inspection never clicks a control`,async()=>{
         await cdp.eval('fixtureAdapter.inspect(fixtureArgs);fixtureAdapter.profileScope(fixtureArgs.username)');assert.equal(await cdp.eval('fixtureClicks'),0);
       });
+      await check(`${name}: logged-in column title cannot compete with the profile header`,async()=>{
+        await cdp.eval(`(()=>{const title=document.createElement('div');title.id='column-title';const link=document.createElement('a');link.href=${JSON.stringify('https://www.threads.com/@'+username)};link.setAttribute('aria-label','直欄標題');const heading=document.createElement('h1');heading.textContent=${JSON.stringify(username)};link.append(heading);const more=document.createElement('button');more.setAttribute('aria-label','更多');more.setAttribute('aria-haspopup','menu');title.append(link,more);document.querySelector('#profile-header').before(title);})()`);
+        const result=await cdp.eval(`(()=>{const info=fixtureAdapter.inspect(fixtureArgs);const scope=fixtureAdapter.profileScope(fixtureArgs.username);return {...info,inHeader:document.querySelector('#profile-header').contains(scope.menu)}})()`);assert.equal(result.profileHeaderCandidateCount,1);assert.equal(result.hasProfileMenu,true);assert.equal(result.menuPopup,'dialog');assert.equal(result.inHeader,true);assert.equal(await cdp.eval('fixtureClicks'),0);
+      });
       await check(`${name}: duplicate independent headers remain ambiguous`,async()=>{
         await cdp.eval(`document.querySelector('#profile-header').insertAdjacentHTML('afterend','<div id="duplicate">'+document.querySelector('#profile-header').innerHTML+'</div>')`);
         assert.equal((await cdp.eval('fixtureAdapter.inspect(fixtureArgs)')).profileHeaderCandidateCount,2);assert.equal(await cdp.eval('fixtureAdapter.profileScope(fixtureArgs.username)'),null);await cdp.eval(`document.querySelector('#duplicate').remove()`);
@@ -49,7 +53,7 @@ async function run() {
         await cdp.eval(`(()=>{const context=fixtureAdapter.profileScope(fixtureArgs.username);context.menu.remove();const button=document.createElement('button');button.textContent='解除封鎖';context.scope.append(button);})()`);
         const result=await cdp.eval(`fixtureAdapter.perform({...fixtureArgs,phase:'prepare'})`);assert.equal(result.status,'already-blocked');assert.equal(result.evidence.diagnostics.hasProfileMenu,false);assert.equal(result.evidence.diagnostics.hasUnblock,true);assert.equal(await cdp.eval('fixtureClicks'),0);
       });
-      await check(`${name}: a feed username and menu cannot replace a removed header`,async()=>{
+      await check(`${name}: column title and feed controls cannot replace a removed header`,async()=>{
         await cdp.eval(`document.querySelector('#profile-header').remove()`);assert.equal((await cdp.eval('fixtureAdapter.inspect(fixtureArgs)')).profileHeaderCandidateCount,0);assert.equal(await cdp.eval('fixtureClicks'),0);
       });
     }

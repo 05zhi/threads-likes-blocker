@@ -129,6 +129,23 @@ test('ambiguous independent profile headers fail closed',async()=>{
   assert.equal(f.adapter.inspect(f.args).profileHeaderCandidateCount,2);assert.equal((await f.adapter.perform({...f.args,phase:'prepare'})).status,'needs-attention');assert.equal(f.counts().menuClicks,0);
 });
 
+test('logged-in column titles do not compete with the account profile header',async()=>{
+  for(const label of ['直欄標題','Column header','Column title']){
+    const f=fixture({mainTag:'div',popup:'dialog'});
+    let columnClicks=0;
+    const columnMore=new Element('button',{'aria-label':'More','aria-haspopup':'menu'});columnMore.onClick=()=>columnClicks++;
+    f.doc.append(new Element('div').append(new Element('a',{href:'/@victim','aria-label':label}).append(new Element('h1',{},'victim')),columnMore));
+    assert.equal(f.adapter.inspect(f.args).profileHeaderCandidateCount,1);
+    const result=await f.adapter.perform({...f.args,phase:'prepare'});assert.equal(result.status,'prepared');assert.equal(columnClicks,0);assert.equal(f.counts().finalClicks,0);
+  }
+});
+
+test('a column title alone never supplies a profile when account header is missing',async()=>{
+  const f=fixture({mainTag:'div',feedOnly:true});
+  f.doc.append(new Element('div').append(new Element('a',{href:'/@victim','aria-label':'直欄標題'}).append(new Element('h1',{},'victim')),new Element('button',{'aria-label':'More','aria-haspopup':'menu'})));
+  assert.equal(f.adapter.inspect(f.args).profileHeaderCandidateCount,0);assert.equal((await f.adapter.perform({...f.args,phase:'prepare'})).status,'needs-attention');assert.equal(f.counts().menuClicks,0);
+});
+
 test('an already-blocked profile without a More menu is safely skipped',async()=>{
   const f=fixture({mainTag:'div',alreadyBlocked:true,withoutMore:true});assert.equal((await f.adapter.perform({...f.args,phase:'prepare'})).status,'already-blocked');assert.deepEqual(f.counts(),{finalClicks:0,menuClicks:0,optionClicks:0});
 });
