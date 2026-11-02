@@ -13,8 +13,11 @@ function mockBackground({ failInjection = 0 } = {}) {
   const events = [];
   let listener, injectionCount = 0;
   const context = vm.createContext({
-    URL,
+    URL, crypto: require('node:crypto').webcrypto, setTimeout,
     chrome: {
+      storage: { local: { async get() { return {}; }, async set() {} } },
+      runtime: { onMessage: { addListener() {} } },
+      tabs: { onRemoved: { addListener() {} }, onUpdated: { addListener() {} } },
       action: {
         onClicked: { addListener(callback) { listener = callback; } },
         async setBadgeText(options) { events.push({ type: "badge", ...options }); },
@@ -33,16 +36,17 @@ function mockBackground({ failInjection = 0 } = {}) {
       }
     }
   });
+  context.importScripts = (...files) => files.forEach(file => vm.runInContext(fs.readFileSync(path.join(extensionDir, file), 'utf8'), context, {filename:file}));
   vm.runInContext(source, context, { filename: "background.js" });
   assert.equal(typeof listener, "function");
   return { context, events, click: listener };
 }
 
-test("manifest requests only the three read-only probe permissions", () => {
+test("manifest limits APIs and host access to the Threads blocking workflow", () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(extensionDir, "manifest.json"), "utf8"));
   assert.equal(manifest.manifest_version, 3);
   assert.deepEqual([...manifest.permissions].sort(), ["activeTab", "scripting", "storage"]);
-  assert.equal(manifest.host_permissions, undefined);
+  assert.deepEqual([...manifest.host_permissions].sort(), ['https://threads.com/*','https://threads.net/*','https://www.threads.com/*','https://www.threads.net/*']);
   assert.equal(manifest.optional_host_permissions, undefined);
   assert.equal(manifest.content_scripts, undefined, "the probe must require toolbar activation");
   assert.equal(manifest.action.default_popup, undefined);
@@ -69,6 +73,7 @@ test("other sites, lookalike hosts, HTTP and browser pages never inject", async 
   for (const url of [
     "https://example.com/", "https://threads.com.evil.example/@alice/post/A",
     "https://threads.com@evil.example/@alice/post/A", "http://threads.com/@alice/post/A",
+    "https://name:secret@threads.com/@alice/post/A", "https://threads.com:444/@alice/post/A",
     "chrome://extensions/", "file:///C:/example.html", "javascript:alert(1)"
   ]) {
     const mock = mockBackground();

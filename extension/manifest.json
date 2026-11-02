@@ -1,9 +1,10 @@
 {
   "manifest_version": 3,
-  "name": "Threads 按讚名單驗證工具（只讀）",
-  "version": "0.1.0",
-  "description": "第一階段可行性驗證：手動選定按讚名單，讀取帳號、去重及匯出。不含封鎖功能。",
+  "name": "Threads 按讚名單與批次封鎖",
+  "version": "0.2.0",
+  "description": "收集貼文與留言的可見按讚名單，確認已選帳號後逐一封鎖；支援作者選項、暫停、中止與本機紀錄。",
   "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": ["https://www.threads.com/*", "https://threads.com/*", "https://www.threads.net/*", "https://threads.net/*"],
   "background": { "service_worker": "background.js" },
   "action": { "default_title": "開啟 Threads 按讚名單驗證工具" }
 }
