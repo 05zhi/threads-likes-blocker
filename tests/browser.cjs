@@ -63,7 +63,7 @@ class CDP {
       URL.createObjectURL=blob=>{globalThis.__exportBlob=blob;return __originalCreateURL(blob)};
       globalThis.chrome={
         storage:{local:{get:async k=>({[k]:__saved[k]}),set:async o=>{Object.assign(__saved,JSON.parse(JSON.stringify(o)))},remove:async k=>{delete __saved[k]}}},
-        runtime:{sendMessage:async message=>{
+        runtime:{id:'fixture-extension',getManifest:()=>({version:'0.4.1'}),sendMessage:async message=>{
           __messages.push(JSON.parse(JSON.stringify(message)));
           if(message.type==='BLOCK_ACTOR'){const result=__actorUsername?{ok:true,actorUsername:__actorUsername}:{ok:false,error:'Cannot read the signed-in actor'};if(__deferActorResponse)return new Promise(resolve=>{__pendingActorResponse=()=>resolve(result)});return result;}
           if(message.type==='BLOCK_START'){
@@ -86,6 +86,7 @@ class CDP {
     await check('source and actor are automatic with no type or optional input fields',async()=>{
       assert.equal(await cdp.eval(`${ui}.getElementById('target').type`),'hidden');assert.equal(await cdp.eval(`${ui}.getElementById('target').value`),'https://www.threads.com/@author/post/TEST');assert.match(await cdp.eval(`${ui}.getElementById('sourceInfo').textContent`),/自動辨識 @author/);assert.match(await cdp.eval(`${ui}.getElementById('actorInfo').textContent`),/@owner/);
       assert.equal(await cdp.eval(`${ui}.querySelectorAll('#kind,#declaredCount,#actor,#targetConfirmed').length`),0);assert.equal(await cdp.eval(`${ui}.getElementById('tools').open`),false);assert.equal(await cdp.eval(`${ui}.getElementById('blockingStep').hidden`),true);
+      assert.equal(await cdp.eval(`${ui}.getElementById('buildInfo').textContent`),'0.4.1 · 套件 0.4.1');assert.equal(await cdp.eval(`document.querySelector('#threads-likes-probe-host').dataset.extensionId`),'fixture-extension');assert.equal(await cdp.eval(`globalThis.__threadsLikesProbe.version`),'0.4.1');
       assert.equal(await cdp.eval(`getComputedStyle(${ui}.querySelector('section:not([hidden])')).borderTopWidth`),'1px');
       assert.equal(await cdp.eval(`(()=>{const section=${ui}.getElementById('sourceStep');return section.lastElementChild.getBoundingClientRect().bottom<=section.getBoundingClientRect().bottom})()`),true);
     });
@@ -238,7 +239,7 @@ class CDP {
       await click('blockExport');const exported=await cdp.eval(`__exportBlob.text().then(JSON.parse)`);assert.equal(exported.id,'fixture-job');assert.equal(exported.status,'stopped');assert.deepEqual(exported.items.map(a=>[a.username,a.role,a.status]),[['alice','liker','cancelled'],['author','author','cancelled']]);assert.ok(exported.exportedAt);assert.equal((await messages()).length,4);
     });
     await check('combined diagnostic export includes collector, blocking job and extension version',async()=>{
-      await click('diagnostics');const exported=await cdp.eval(`__exportBlob.text().then(JSON.parse)`);assert.equal(exported.extensionVersion,'0.4.0');assert.equal(exported.collector.target.postId,'TEST');assert.equal(exported.blockingJob.id,'fixture-job');assert.equal(exported.blockingJob.status,'stopped');assert.ok(exported.exportedAt);assert.equal((await messages()).length,4);
+      await click('diagnostics');const exported=await cdp.eval(`__exportBlob.text().then(JSON.parse)`);assert.equal(exported.extensionVersion,'0.4.1');assert.equal(exported.runtimeVersion,'0.4.1');assert.equal(exported.panelVersion,'0.4.1');assert.equal(exported.extensionId,'fixture-extension');assert.equal(exported.collector.target.postId,'TEST');assert.equal(exported.blockingJob.id,'fixture-job');assert.equal(exported.blockingJob.status,'stopped');assert.ok(exported.exportedAt);assert.equal((await messages()).length,4);
     });
     await cdp.eval(`${ui}.querySelector('main').scrollTop=${ui}.querySelector('main').scrollHeight`);await delay(120);
     await cdp.call('Page.captureScreenshot',{format:'png'}).then(r=>fs.writeFile(path.join(scratch,'blocking-preview.png'),Buffer.from(r.data,'base64')));
@@ -335,6 +336,20 @@ class CDP {
       await freshCollector();await cdp.eval(`document.querySelector('#list').innerHTML=Array.from({length:1800},(_,i)=>'<div class="row"><a href="https://www.threads.com/@initial'+i+'">Initial '+i+'</a></div>').join('')`);await click('pick');await cdp.eval(`document.querySelector('#list a').click();${ui}.getElementById('scopeConfirmed').checked=true`);
       await cdp.eval(`(()=>{const list=document.querySelector('#list'),native=Object.getOwnPropertyDescriptor(Element.prototype,'scrollTop');let recycled=false;Object.defineProperty(list,'scrollTop',{configurable:true,get(){return native.get.call(this)},set(value){native.set.call(this,value);if(!recycled){recycled=true;this.innerHTML='<div class="row"><a href="https://www.threads.com/@recycled">Recycled next screen</a></div>'}}});${ui}.getElementById('start').click();${ui}.getElementById('stop').click();${ui}.getElementById('start').click();})()`);await delay(1000);await click('pause');await click('review');
       assert.ok((await snapshot()).accounts.some(a=>a.username==='initial0'),'new generation must sample the initial virtual screen before scrolling it away');
+    });
+    async function freshBootstrap() {
+      await cdp.call('Page.navigate',{url:pageUrl});await delay(100);
+      for(let i=0;i<50;i++){if(await cdp.eval(`document.readyState==='complete' && !!document.querySelector('#list')`))break;await delay(100);}
+      await cdp.eval(setup());await cdp.eval(core);
+    }
+    await check('legacy and other-extension panels are never reused or mixed with new content',async()=>{
+      for(const identity of [null,{version:'0.4.1',extensionId:'other-extension'}]){
+        await freshBootstrap();await cdp.eval(`globalThis.__legacyShows=0;globalThis.__threadsLikesProbe={...${JSON.stringify(identity||{})},show(){__legacyShows++}};const oldHost=document.createElement('div');oldHost.id='threads-likes-probe-host';document.documentElement.append(oldHost)`);
+        await assert.rejects(()=>cdp.eval(content),/頁面仍有舊版工具/);assert.equal(await cdp.eval('__legacyShows'),0);assert.equal(await cdp.eval(`document.querySelectorAll('#threads-likes-probe-host').length`),1);assert.equal(await cdp.eval(`__messages.some(m=>m.type==='BLOCK_START')`),false);
+      }
+    });
+    await check('mixed package and panel versions refuse startup before creating any controls',async()=>{
+      await freshBootstrap();await cdp.eval(`chrome.runtime.getManifest=()=>({version:'0.3.0'})`);await assert.rejects(()=>cdp.eval(content),/套件與面板版本不一致/);assert.equal(await cdp.eval(`document.querySelectorAll('#threads-likes-probe-host').length`),0);assert.equal(await cdp.eval('__messages.length'),0);
     });
     const report={testedAt:new Date().toISOString(),browser:(await cdp.call('Browser.getVersion')).product,environment:'isolated headless Chrome, simulated local fixture, mocked chrome.storage and runtime job messages; no actual block actions, no live Threads or installed-extension end-to-end test',passed:results.length,tests:results};
     await fs.writeFile(path.join(scratch,'browser-results.json'),JSON.stringify(report,null,2));

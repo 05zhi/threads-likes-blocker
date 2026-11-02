@@ -1,16 +1,24 @@
 /* Collector reads DOM; explicit user-confirmed blocking runs in the background. */
 (() => {
   "use strict";
+  const EXTENSION_VERSION = "0.4.1";
+  const EXTENSION_ID = chrome.runtime?.id || "";
+  const RUNTIME_VERSION = chrome.runtime?.getManifest?.()?.version || EXTENSION_VERSION;
+  if (RUNTIME_VERSION !== EXTENSION_VERSION) throw new Error("套件與面板版本不一致，請重新載入擴充功能。");
   if (globalThis.__threadsLikesProbe) {
+    if (globalThis.__threadsLikesProbe.version !== EXTENSION_VERSION || globalThis.__threadsLikesProbe.extensionId !== EXTENSION_ID) throw new Error("頁面仍有舊版工具，請按擴充功能圖示重新開啟。");
     globalThis.__threadsLikesProbe.show();
     return;
   }
+  if (document.getElementById("threads-likes-probe-host")) throw new Error("頁面仍有另一份工具面板，請按擴充功能圖示重新開啟。");
   const Core = globalThis.ThreadsProbeCore;
   if (!Core) throw new Error("Missing probe core");
   if (!Number.isInteger(globalThis.__threadsProbeTabId)) throw new Error("Missing toolbar tab context");
   const STORE_KEY = `threadsLikesProbe.snapshot.v1.tab.${globalThis.__threadsProbeTabId}`;
   const host = document.createElement("div");
   host.id = "threads-likes-probe-host";
+  host.dataset.panelVersion = EXTENSION_VERSION;
+  host.dataset.extensionId = EXTENSION_ID;
   host.style.cssText = "all:initial;position:fixed;inset:0 0 0 auto;width:380px;max-width:95vw;height:100vh;z-index:2147483647;pointer-events:auto;color-scheme:light;";
   const shadow = host.attachShadow({ mode: "open" });
   shadow.innerHTML = `
@@ -31,7 +39,7 @@
       [hidden]{display:none!important} .step{display:inline-grid;place-items:center;width:23px;height:23px;background:#e9efff;color:#235bc9;border-radius:50%;margin-right:7px;font-size:12px}details{margin-top:12px;border-top:1px solid #edf0f5;padding-top:10px}summary{cursor:pointer;color:#536177;font-size:12px}summary:hover{color:#235bc9}#sourceInfo{background:#f3f6fb;border-radius:8px;padding:10px;margin:0}#actorInfo{font-size:12px;color:#536177}#blockStart{width:100%;padding:11px;font-weight:650}#selectionSummary{font-weight:650}.collection-summary{display:flex;align-items:center;justify-content:space-between;gap:10px}.collection-summary .count{line-height:1.2}.muted-count{font-size:12px;color:#536177}#blockResults{max-height:260px;overflow:auto}#listControls{margin-top:12px}#sourceStep h2,#collectionStep h2,#blockingStep h2{display:flex;align-items:center}
     </style>
     <div class="panel">
-      <header><div><h1>Threads 名單與批次封鎖</h1><div class="sub">0.4.0 · 先確認名單，再執行</div></div><button id="close" title="關閉並暫停">×</button></header>
+      <header><div><h1>Threads 名單與批次封鎖</h1><div id="buildInfo" class="sub"></div></div><button id="close" title="關閉並暫停">×</button></header>
       <main>
         <div id="notice" role="status" aria-live="polite"></div>
         <section id="workBanner" class="warning" hidden><strong>有暫停中的封鎖工作</strong><p class="hint">請繼續或中止原工作。要重新收集或重新選名單，請先中止舊工作。</p><button id="blockReturn" class="danger">中止舊工作並回到名單</button></section>
@@ -60,13 +68,15 @@
     </div>`;
   document.documentElement.appendChild(host);
   const $ = (id) => shadow.getElementById(id);
+  $("buildInfo").textContent = `${EXTENSION_VERSION} · 套件 ${RUNTIME_VERSION}`;
+  $("buildInfo").title = `擴充功能 ID：${EXTENSION_ID}`;
   const labels = { idle: "尚未開始", collecting: "收集中", paused: "已暫停", stopped: "已中止", ended: "收集已結束", restored: "已還原上次紀錄（不會自動繼續）" };
   let state = freshState(), scope = null, scopePage = "", outline = null, picking = false, pickingTarget = false;
   let generation = 0, observer = null, sampleTimer = null, saveTimer = null, saveChain = Promise.resolve();
   let changeRevision = 0, runningSince = 0, scopeSignature = "", listPage = 0, blockJob = null, blockRequest = false, commandRevision = 0, pauseAfterRequest = false;
   let samplePromise = null, sampleGeneration = null, scanCursor = 0, lastGrowthAt = 0, renderTimer = null, outlineFrame = null, pickedSourcePage = null;
   let detectedActor = "", actorError = "", actorPromise = null, actorChecking = false;
-  function freshState() { return { schemaVersion: 1, extensionVersion: "0.4.0", mode: "read-only-probe", status: "idle", reason: "", completeness: "unknown", liveCompatibility: "not-verified", target: null, accounts: [], blockSelection: [], diagnostics: [], startedAt: null, updatedAt: null, finishedAt: null, scrollPasses: 0, scopeEvidence: null, limits: { maxAccounts: 10000, maxRunMs: 120000, noGrowthMs: 15000 } }; }
+  function freshState() { return { schemaVersion: 1, extensionVersion: EXTENSION_VERSION, mode: "read-only-probe", status: "idle", reason: "", completeness: "unknown", liveCompatibility: "not-verified", target: null, accounts: [], blockSelection: [], diagnostics: [], startedAt: null, updatedAt: null, finishedAt: null, scrollPasses: 0, scopeEvidence: null, limits: { maxAccounts: 10000, maxRunMs: 120000, noGrowthMs: 15000 } }; }
   function notice(text = "") { $("notice").textContent = text; }
   function pageIdentity() { return Core.sourcePage?.(location.href) || `${location.origin}${location.pathname}${location.search}${location.hash}`; }
   function detectedTarget() {
@@ -225,7 +235,7 @@
     $("blockExport").disabled = !blockJob;
     const names = { running: "封鎖執行中", paused: "封鎖已暫停", stopped: "封鎖已中止", completed: "佇列已處理完畢（請核對逐筆結果）" };
     const statuses = { pending: "等待", "in-progress": "處理中", success: "封鎖成功", "already-blocked": "已封鎖，略過", skipped: "略過", failed: "失敗", unknown: "結果不明", "needs-attention": "需人工檢查", cancelled: "已取消" };
-    $("blockStatus").textContent = blockJob ? `${names[blockJob.status] || blockJob.status} · ${blockJob.items.filter(a => !["pending", "in-progress"].includes(a.status)).length}/${blockJob.items.length} · 登入 @${blockJob.actorUsername}${blockJob.current ? ` · 目前 @${blockJob.current}` : ""}\n來源：${blockJob.target.url}\n${blockJob.reason || ""}` : "尚無封鎖工作";
+    $("blockStatus").textContent = blockJob ? `${names[blockJob.status] || blockJob.status} · ${blockJob.items.filter(a => !["pending", "in-progress"].includes(a.status)).length}/${blockJob.items.length} · 登入 @${blockJob.actorUsername}${blockJob.current ? ` · 目前 @${blockJob.current}` : ""}${blockJob.extensionVersion ? `\n工作版本：${blockJob.extensionVersion}${blockJob.extensionVersion !== RUNTIME_VERSION ? "（舊工作紀錄）" : ""}` : ""}\n來源：${blockJob.target.url}\n${blockJob.reason || ""}` : "尚無封鎖工作";
     const resultList = $("blockResults"); resultList.replaceChildren();
     if (blockJob) for (const item of blockJob.items.filter(a => a.status !== "pending").slice(-100)) {
       const row = document.createElement("div"); row.className = "account"; row.textContent = `@${item.username}${item.role === "author" ? "（作者）" : ""}：${statuses[item.status] || item.status}`;
@@ -376,7 +386,7 @@
   }
   $("json").onclick = () => exportFile("json"); $("csv").onclick = () => exportFile("csv");
   $("diagnostics").onclick = () => {
-    const report = { schemaVersion: 1, extensionVersion: "0.4.0", collector: state.target ? JSON.parse(JSON.stringify(state)) : null, blockingJob: blockJob ? JSON.parse(JSON.stringify(blockJob)) : null, exportedAt: new Date().toISOString() };
+    const report = { schemaVersion: 1, extensionVersion: EXTENSION_VERSION, panelVersion: EXTENSION_VERSION, runtimeVersion: RUNTIME_VERSION, extensionId: EXTENSION_ID, collector: state.target ? JSON.parse(JSON.stringify(state)) : null, blockingJob: blockJob ? JSON.parse(JSON.stringify(blockJob)) : null, exportedAt: new Date().toISOString() };
     const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json;charset=utf-8" }), url = URL.createObjectURL(blob), link = document.createElement("a");
     link.href = url; link.download = `threads-diagnostics-${state.target?.postId || blockJob?.target?.postId || Date.now()}.json`; shadow.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
@@ -478,7 +488,7 @@
     if (event.target instanceof Element && event.target.closest('button,[role="button"],[role="tab"],a[href]')) finish("paused", "偵測到名單外的頁面控制操作，已暫停。可繼續原名單或結束並檢查已收集結果。");
   }, { capture: true, passive: true });
   window.addEventListener("pagehide", () => { if (state.status === "collecting") finish("paused", "頁面已離開，收集暫停。"); pauseBlockingOnLeave(); });
-  globalThis.__threadsLikesProbe = { show() { host.style.display = "block"; if (scope?.isConnected) drawOutline(); } };
+  globalThis.__threadsLikesProbe = { version: EXTENSION_VERSION, extensionId: EXTENSION_ID, show() { host.style.display = "block"; if (scope?.isConnected) drawOutline(); } };
   setDetectedTarget(detectedTarget());
   render();
   // Disable collection until restoration finishes, avoiding a late overwrite.
@@ -487,7 +497,7 @@
     const saved = result[STORE_KEY];
     if (saved?.schemaVersion === 1 && saved.mode === "read-only-probe" && Array.isArray(saved.accounts) && Core.canonicalTarget(saved.target?.url)) {
       state = { ...freshState(), ...saved, target: { ...saved.target, ...Core.canonicalTarget(saved.target.url) }, accounts: Core.mergeAccounts(saved.accounts, [], saved.updatedAt || new Date().toISOString()).slice(0, 10000), status: "restored", completeness: "unknown", liveCompatibility: "not-verified" };
-      state.extensionVersion = "0.4.0"; state.limits = { maxAccounts: 10000, maxRunMs: 120000, noGrowthMs: 15000 };
+      state.extensionVersion = EXTENSION_VERSION; state.limits = { maxAccounts: 10000, maxRunMs: 120000, noGrowthMs: 15000 };
       state.accounts = state.accounts.filter(a => a.username.toLowerCase() !== state.target.username.toLowerCase());
       const choices = Array.isArray(saved.blockSelection) ? new Set(saved.blockSelection) : null;
       state.blockSelection = state.accounts.filter(a => !choices || choices.has(a.username.toLowerCase())).map(a => a.username.toLowerCase());

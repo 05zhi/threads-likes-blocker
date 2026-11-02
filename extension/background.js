@@ -3,6 +3,7 @@ importScripts("core.js", "job.js");
 const Core = globalThis.ThreadsProbeCore, Jobs = globalThis.ThreadsBlockJob;
 const JOB_KEY = "threadsBlocker.job.v1";
 let job = null, runner = null, serial = Promise.resolve(), workerOwnership = null;
+const openingTabs = new Set();
 const now = () => new Date().toISOString();
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 const ready = chrome.storage.local.get(JOB_KEY).then(async saved => {
@@ -67,6 +68,50 @@ async function readActor(tabId) {
   if (!safeOrigin(current.url) || sourcePage(current.url) !== sourcePage(tab.url)) throw new Error("頁面已改變，請重新確認登入帳號。");
   return actorUsername;
 }
+async function panelIdentity(tabId) {
+  const response = await chrome.scripting.executeScript({ target: { tabId }, func: () => {
+    const probe = globalThis.__threadsLikesProbe, host = document.getElementById("threads-likes-probe-host");
+    return { hasProbe: !!probe, hasHost: !!host, hostCount: document.querySelectorAll('#threads-likes-probe-host').length, version: probe?.version || null, extensionId: probe?.extensionId || null, hostVersion: host?.dataset.panelVersion || null, hostExtensionId: host?.dataset.extensionId || null };
+  } });
+  if (response.length !== 1 || typeof response[0].result?.hasProbe !== "boolean" || typeof response[0].result?.hasHost !== "boolean" || !Number.isSafeInteger(response[0].result?.hostCount)) throw new Error("無法確認頁面中的工具版本，尚未開啟面板。");
+  return response[0].result;
+}
+function compatiblePanel(identity, version, extensionId) {
+  return identity.hasProbe && identity.hasHost && identity.hostCount === 1 && identity.version === version && identity.extensionId === extensionId && identity.hostVersion === version && identity.hostExtensionId === extensionId;
+}
+async function sourceTab(tabId, expectedSource) {
+  const tab = await chrome.tabs.get(tabId);
+  if (!safeOrigin(tab.url) || sourcePage(tab.url) !== expectedSource) throw new Error("來源頁面已改變，請回到原 Threads 頁面後重新開啟工具。");
+  return tab;
+}
+async function pauseForPanelUpgrade(tabId) {
+  await ready;
+  await mutate(async () => {
+    if (job?.sourceTabId !== tabId || !["running", "paused"].includes(job.status)) return;
+    job = Jobs.pause(job, now());
+    job.reason = "工具版本已更新，來源頁面重新載入；封鎖工作維持暫停，請核對後手動繼續。";
+    await save();
+  });
+}
+async function reloadForPanelUpgrade(tabId, expectedSource) {
+  await pauseForPanelUpgrade(tabId);
+  await sourceTab(tabId, expectedSource);
+  await chrome.tabs.reload(tabId);
+  const deadline = Date.now() + 20000;
+  while (Date.now() < deadline) {
+    const tab = await sourceTab(tabId, expectedSource);
+    if (tab.status === "complete") {
+      // A reload can be queued while tabs.get still reports the old complete
+      // document. Require a fresh document, not just its loading status.
+      try {
+        const identity = await panelIdentity(tabId);
+        if (!identity.hasProbe && identity.hostCount === 0) return;
+      } catch { /* Navigation may replace the frame between completion and this read. */ }
+    }
+    await wait(250);
+  }
+  throw new Error("頁面更新逾時或仍有另一個工具面板，請重新整理 Threads 後再開啟。");
+}
 function kick() {
   if (runner || job?.status !== "running") return;
   runner = run().finally(() => { runner = null; if (job?.status === "running") kick(); });
@@ -129,6 +174,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "BLOCK_GET") return { ok: true, job };
     if (message.type === "BLOCK_ACTOR") return { ok: true, actorUsername: await readActor(sender.tab.id) };
     return mutate(async () => {
+      if (openingTabs.has(sender.tab.id) && ["BLOCK_START", "BLOCK_RESUME"].includes(message.type)) throw new Error("工具面板正在更新，請等新版面板開啟後重新核對名單。");
       if (message.type === "BLOCK_START") {
         if (locked(job) || runner) throw new Error("已有工作仍在執行或收尾，請先完成或中止後稍候。");
         if (message.confirmed !== true) throw new Error("請先確認封鎖名單。");
@@ -171,14 +217,22 @@ chrome.tabs.onUpdated.addListener((tabId, changes) => {
   })).catch(() => {});
 });
 chrome.action.onClicked.addListener(async tab => {
+  if (openingTabs.has(tab.id)) return;
+  openingTabs.add(tab.id);
   try {
     const url = new URL(tab.url || "");
     if (!safeOrigin(url.href)) { await chrome.action.setBadgeText({ tabId: tab.id, text: "WEB" }); await chrome.action.setTitle({ tabId: tab.id, title: "請先開啟 Threads 網頁，再按此圖示。" }); return; }
+    const expectedSource = sourcePage(url.href), identity = await panelIdentity(tab.id);
+    const version = chrome.runtime.getManifest().version, extensionId = chrome.runtime.id;
+    if ((identity.hasProbe || identity.hasHost) && !compatiblePanel(identity, version, extensionId)) await reloadForPanelUpgrade(tab.id, expectedSource);
+    await sourceTab(tab.id, expectedSource);
     await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: tabId => { globalThis.__threadsProbeTabId = tabId; }, args: [tab.id] });
     await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["core.js", "content.js"] });
+    await sourceTab(tab.id, expectedSource);
+    if (!compatiblePanel(await panelIdentity(tab.id), version, extensionId)) throw new Error("面板與套件版本或來源不一致，請核對載入資料夾後重新載入擴充功能。");
     await chrome.action.setBadgeText({ tabId: tab.id, text: "" });
   } catch (error) {
     if (tab.id == null) return;
     await chrome.action.setBadgeText({ tabId: tab.id, text: "!" }); await chrome.action.setTitle({ tabId: tab.id, title: `無法開啟工具：${error.message}` });
-  }
+  } finally { openingTabs.delete(tab.id); }
 });

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Threads 按讚名單與批次封鎖",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "收集貼文與留言的可見按讚名單，確認已選帳號後逐一封鎖；支援作者選項、暫停、中止與本機紀錄。",
   "permissions": ["activeTab", "scripting", "storage"],
   "host_permissions": ["https://www.threads.com/*", "https://threads.com/*", "https://www.threads.net/*", "https://threads.net/*"],
