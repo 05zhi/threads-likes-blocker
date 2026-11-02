@@ -41,6 +41,11 @@ function harness(options={}) {
           if(options.adapter)return options.adapter(args,call,calls);
           return[{result:args.phase==='prepare'?{status:'prepared',confirmationToken:'mock-token'}:{status:'success'}}];
         }
+        if(String(value.func).includes('readableActorFromNavigation')){
+          calls.push({kind:'read-actor',tabId:value.target.tabId});
+          if(options.actorRead)return options.actorRead(tabs,calls);
+          return[{result:options.actorUsername===undefined?'me':options.actorUsername}];
+        }
         value.func?.(...(value.args||[]));return[];
       }}
     }
@@ -51,6 +56,25 @@ function harness(options={}) {
   function message(value,from=sender){return new Promise((resolve,reject)=>{const kept=listeners.message(value,clone(from),resolve);if(kept!==true)reject(new Error('Message not handled'));});}
   return{context,calls,tabs,store,listeners,ready,message,job:()=>clone(vm.runInContext('job',context)),phases:()=>calls.filter(c=>c.kind==='adapter').map(c=>c.phase)};
 }
+
+test('actor detection reads only the sending Threads tab without starting a blocking job',async()=>{
+  const h=harness({actorUsername:'me.123'});await h.ready;
+  const response=await h.message({type:'BLOCK_ACTOR'});
+  assert.equal(response.ok,true);assert.equal(response.actorUsername,'me.123');assert.equal(h.job(),null);
+  assert.deepEqual(h.calls.filter(c=>c.kind==='inject').map(c=>c.files),[['block-adapter.js']]);
+  assert.deepEqual(h.calls.filter(c=>c.kind==='read-actor').map(c=>c.tabId),[7]);
+  assert.equal(h.calls.some(c=>['create','navigate','adapter','save'].includes(c.kind)),false);
+});
+
+test('actor detection rejects missing identities, non-Threads tabs and page changes',async()=>{
+  for(const actorUsername of [null,'','@me','bad user']){
+    const h=harness({actorUsername});await h.ready;assert.equal((await h.message({type:'BLOCK_ACTOR'})).ok,false);assert.equal(h.job(),null);
+  }
+  const h=harness();await h.ready;h.tabs.set(7,{id:7,url:'https://example.com/'});
+  assert.equal((await h.message({type:'BLOCK_ACTOR'})).ok,false);assert.equal(h.calls.some(c=>c.kind==='inject'),false);
+  const changed=harness({actorRead(tabs){tabs.get(7).url='https://www.threads.com/search?q=changed';return[{result:'me'}];}});await changed.ready;
+  assert.equal((await changed.message({type:'BLOCK_ACTOR'})).ok,false);assert.equal(changed.job(),null);
+});
 
 test('START requires explicit confirmation, a Threads sender and the current target',async()=>{
   const h=harness();await h.ready;

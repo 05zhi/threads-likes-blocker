@@ -56,6 +56,17 @@ async function adapter(tabId, args) {
   if (response.length !== 1 || !response[0].result) throw new Error("無法讀取適配器結果。");
   return response[0].result;
 }
+async function readActor(tabId) {
+  const tab = await chrome.tabs.get(tabId);
+  if (!safeOrigin(tab.url)) throw new Error("請回到已登入的 Threads 分頁。");
+  await chrome.scripting.executeScript({ target: { tabId }, files: ["block-adapter.js"] });
+  const response = await chrome.scripting.executeScript({ target: { tabId }, func: () => globalThis.ThreadsBlockAdapter.readableActorFromNavigation() });
+  const actorUsername = response.length === 1 ? response[0].result : null;
+  if (typeof actorUsername !== "string" || !/^[A-Za-z0-9._]{1,30}$/.test(actorUsername)) throw new Error("尚無法確認登入帳號，請等待 Threads 載入或確認已登入。");
+  const current = await chrome.tabs.get(tabId);
+  if (!safeOrigin(current.url) || sourcePage(current.url) !== sourcePage(tab.url)) throw new Error("頁面已改變，請重新確認登入帳號。");
+  return actorUsername;
+}
 function kick() {
   if (runner || job?.status !== "running") return;
   runner = run().finally(() => { runner = null; if (job?.status === "running") kick(); });
@@ -116,6 +127,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     await ready;
     if (!Number.isInteger(sender?.tab?.id) || !safeOrigin(sender.tab.url || sender.url)) throw new Error("只接受 Threads 分頁面板指令。");
     if (message.type === "BLOCK_GET") return { ok: true, job };
+    if (message.type === "BLOCK_ACTOR") return { ok: true, actorUsername: await readActor(sender.tab.id) };
     return mutate(async () => {
       if (message.type === "BLOCK_START") {
         if (locked(job) || runner) throw new Error("已有工作仍在執行或收尾，請先完成或中止後稍候。");
@@ -132,7 +144,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (message.type === "BLOCK_PAUSE") job = Jobs.pause(job, now());
         else if (message.type === "BLOCK_STOP") job = Jobs.stop(job, now());
         else if (message.type === "BLOCK_RESUME") {
-          if (!sameSource(sender.tab.url, job.sourcePage || job.target.url) || String(message.actorUsername || "").trim().replace(/^@/, "").toLowerCase() !== job.actorUsername.toLowerCase()) throw new Error("請回原來源頁面，填入原登入帳號後繼續。");
+          if (!sameSource(sender.tab.url, job.sourcePage || job.target.url) || String(message.actorUsername || "").trim().replace(/^@/, "").toLowerCase() !== job.actorUsername.toLowerCase()) throw new Error("請回原來源頁面，並確認目前登入的仍是原帳號後繼續。");
           job = Jobs.resume(job, now()); job.sourceTabId = sender.tab.id;
         } else throw new Error("無法辨識工作指令。");
         await save(); if (job.status === "running") kick();
