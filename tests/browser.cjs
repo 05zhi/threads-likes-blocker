@@ -233,7 +233,7 @@ class CDP {
       await click('blockExport');const exported=await cdp.eval(`__exportBlob.text().then(JSON.parse)`);assert.equal(exported.id,'fixture-job');assert.equal(exported.status,'stopped');assert.deepEqual(exported.items.map(a=>[a.username,a.role,a.status]),[['alice','liker','cancelled'],['author','author','cancelled']]);assert.ok(exported.exportedAt);assert.equal((await messages()).length,4);
     });
     await check('combined diagnostic export includes collector, blocking job and extension version',async()=>{
-      await click('diagnostics');const exported=await cdp.eval(`__exportBlob.text().then(JSON.parse)`);assert.equal(exported.extensionVersion,'0.3.0');assert.equal(exported.collector.target.postId,'TEST');assert.equal(exported.blockingJob.id,'fixture-job');assert.equal(exported.blockingJob.status,'stopped');assert.ok(exported.exportedAt);assert.equal((await messages()).length,4);
+      await click('diagnostics');const exported=await cdp.eval(`__exportBlob.text().then(JSON.parse)`);assert.equal(exported.extensionVersion,'0.3.1');assert.equal(exported.collector.target.postId,'TEST');assert.equal(exported.blockingJob.id,'fixture-job');assert.equal(exported.blockingJob.status,'stopped');assert.ok(exported.exportedAt);assert.equal((await messages()).length,4);
     });
     await cdp.eval(`${ui}.querySelector('main').scrollTop=${ui}.querySelector('main').scrollHeight`);
     await cdp.call('Page.captureScreenshot',{format:'png'}).then(r=>fs.writeFile(path.join(scratch,'blocking-preview.png'),Buffer.from(r.data,'base64')));

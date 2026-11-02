@@ -30,7 +30,7 @@
       #notice{padding:9px 12px;background:#fff1cf;border-radius:6px;margin-bottom:12px;white-space:pre-wrap;font-size:12px}#notice:empty{display:none}
     </style>
     <div class="panel">
-      <header><div><h1>Threads 名單與批次封鎖</h1><div class="sub">0.3.0 · 先確認名單，再執行</div></div><button id="close" title="關閉並暫停">×</button></header>
+      <header><div><h1>Threads 名單與批次封鎖</h1><div class="sub">0.3.1 · 先確認名單，再執行</div></div><button id="close" title="關閉並暫停">×</button></header>
       <main>
         <div id="notice" role="status" aria-live="polite"></div>
         <section id="workBanner" class="warning" hidden><strong>有暫停中的封鎖工作</strong><p class="hint">請繼續或中止原工作。要重新收集或重新選名單，請先中止舊工作。</p><button id="blockReturn" class="danger">中止舊工作並回到名單</button></section>
@@ -79,7 +79,7 @@
   let generation = 0, observer = null, sampleTimer = null, saveTimer = null, saveChain = Promise.resolve();
   let changeRevision = 0, runningSince = 0, scopeSignature = "", listPage = 0, blockJob = null, blockRequest = false, commandRevision = 0, pauseAfterRequest = false;
   let samplePromise = null, sampleGeneration = null, scanCursor = 0, lastGrowthAt = 0, renderTimer = null, outlineFrame = null, pickedSourcePage = null;
-  function freshState() { return { schemaVersion: 1, extensionVersion: "0.3.0", mode: "read-only-probe", status: "idle", reason: "", completeness: "unknown", liveCompatibility: "not-verified", target: null, accounts: [], blockSelection: [], diagnostics: [], startedAt: null, updatedAt: null, finishedAt: null, scrollPasses: 0, scopeEvidence: null, limits: { maxAccounts: 10000, maxRunMs: 120000, noGrowthMs: 15000 } }; }
+  function freshState() { return { schemaVersion: 1, extensionVersion: "0.3.1", mode: "read-only-probe", status: "idle", reason: "", completeness: "unknown", liveCompatibility: "not-verified", target: null, accounts: [], blockSelection: [], diagnostics: [], startedAt: null, updatedAt: null, finishedAt: null, scrollPasses: 0, scopeEvidence: null, limits: { maxAccounts: 10000, maxRunMs: 120000, noGrowthMs: 15000 } }; }
   function notice(text = "") { $("notice").textContent = text; }
   function pageIdentity() { return Core.sourcePage?.(location.href) || `${location.origin}${location.pathname}${location.search}${location.hash}`; }
   function detectedTarget() {
@@ -372,7 +372,7 @@
   }
   $("json").onclick = () => exportFile("json"); $("csv").onclick = () => exportFile("csv");
   $("diagnostics").onclick = () => {
-    const report = { schemaVersion: 1, extensionVersion: "0.3.0", collector: state.target ? JSON.parse(JSON.stringify(state)) : null, blockingJob: blockJob ? JSON.parse(JSON.stringify(blockJob)) : null, exportedAt: new Date().toISOString() };
+    const report = { schemaVersion: 1, extensionVersion: "0.3.1", collector: state.target ? JSON.parse(JSON.stringify(state)) : null, blockingJob: blockJob ? JSON.parse(JSON.stringify(blockJob)) : null, exportedAt: new Date().toISOString() };
     const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json;charset=utf-8" }), url = URL.createObjectURL(blob), link = document.createElement("a");
     link.href = url; link.download = `threads-diagnostics-${state.target?.postId || blockJob?.target?.postId || Date.now()}.json`; shadow.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
@@ -450,7 +450,7 @@
     const saved = result[STORE_KEY];
     if (saved?.schemaVersion === 1 && saved.mode === "read-only-probe" && Array.isArray(saved.accounts) && Core.canonicalTarget(saved.target?.url)) {
       state = { ...freshState(), ...saved, target: { ...saved.target, ...Core.canonicalTarget(saved.target.url) }, accounts: Core.mergeAccounts(saved.accounts, [], saved.updatedAt || new Date().toISOString()).slice(0, 10000), status: "restored", completeness: "unknown", liveCompatibility: "not-verified" };
-      state.extensionVersion = "0.3.0"; state.limits = { maxAccounts: 10000, maxRunMs: 120000, noGrowthMs: 15000 };
+      state.extensionVersion = "0.3.1"; state.limits = { maxAccounts: 10000, maxRunMs: 120000, noGrowthMs: 15000 };
       state.accounts = state.accounts.filter(a => a.username.toLowerCase() !== state.target.username.toLowerCase());
       const choices = Array.isArray(saved.blockSelection) ? new Set(saved.blockSelection) : null;
       state.blockSelection = state.accounts.filter(a => !choices || choices.has(a.username.toLowerCase())).map(a => a.username.toLowerCase());
