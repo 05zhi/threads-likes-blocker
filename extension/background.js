@@ -1,7 +1,7 @@
 /* Only an explicit panel command starts a blocking job. */
-importScripts("core.js", "job.js");
+importScripts("core.js", "job.js", "request-probe-core.js");
 const Core = globalThis.ThreadsProbeCore, Jobs = globalThis.ThreadsBlockJob;
-const BUILD_VERSION = "0.4.5";
+const BUILD_VERSION = "0.4.6";
 const JOB_KEY = "threadsBlocker.job.v1";
 let job = null, runner = null, serial = Promise.resolve(), workerOwnership = null;
 const openingTabs = new Set();
@@ -71,6 +71,17 @@ async function adapter(tabId, args) {
   const response = await chrome.scripting.executeScript({ target: { tabId }, func: input => globalThis.ThreadsBlockAdapter.perform(input), args: [args] });
   if (response.length !== 1 || !response[0].result) throw new Error("無法讀取適配器結果。");
   return response[0].result;
+}
+async function beginRequestProbe(tabId) {
+  await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', files: ['request-probe-core.js', 'request-probe.js'] });
+  const response = await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: () => globalThis.ThreadsRequestProbe.begin() });
+  if (response.length !== 1 || response[0].result?.active !== true) throw new Error('請求觀察器未啟動，尚未執行驗證封鎖。');
+}
+async function finishRequestProbe(tabId) {
+  const response = await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: () => globalThis.ThreadsRequestProbe.finish() });
+  if (response.length !== 1 || !response[0].result) throw new Error('Request probe unavailable');
+  // Page-world output is untrusted; sanitize again before storing/exporting it.
+  return globalThis.ThreadsRequestProbeCore.cleanReport(response[0].result);
 }
 async function readActor(tabId) {
   const tab = await chrome.tabs.get(tabId);
@@ -146,7 +157,7 @@ async function run() {
       await mutate(async () => { job = Jobs.nextItem(job, now()); await save(); });
       if (job.status !== "running" || !job.current) break;
       const username = job.current, actorUsername = job.actorUsername;
-      let submitted = false, result;
+      let submitted = false, result, probeTabId = null;
       try {
         await assertSource(job);
         let tabId = job.workerTabId;
@@ -172,6 +183,7 @@ async function run() {
         firstProfile = false;
         if (!await waitForProfile(tabId, username, taskId)) { await defer(username); break; }
         await chrome.scripting.executeScript({ target: { tabId }, files: ["core.js", "block-adapter.js"] });
+        if (job.requestProbeEnabled) { await beginRequestProbe(tabId); probeTabId = tabId; }
         result = await adapter(tabId, { username, actorUsername, phase: "prepare" });
         if (result.status === "prepared") {
           await assertSource(job);
@@ -195,6 +207,14 @@ async function run() {
         }
         if (!["success", "already-blocked", "skipped", "failed", "unknown", "needs-attention"].includes(result.status)) result = { status: submitted ? "unknown" : "needs-attention", reason: "適配器狀態無法辨識，已暫停。" };
       } catch (error) { result = { status: submitted ? "unknown" : "needs-attention", reason: `${submitted ? "確認可能已送出，請人工核對" : "尚未送出最後確認"}：${error.message}` }; }
+      finally {
+        if (probeTabId !== null) {
+          let report;
+          try { report = await finishRequestProbe(probeTabId); }
+          catch { report = { ...globalThis.ThreadsRequestProbeCore.cleanReport(null), unavailable: true }; }
+          await mutate(async () => { if (job?.id === taskId) { job.requestProbe = report; await save(); } });
+        }
+      }
       await mutate(async () => {
         if (job?.id === taskId && job.current === username) { job = Jobs.recordResult(job, username, result, now()); job.phase = null; await save(); }
       });
@@ -220,7 +240,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const target = Core.canonicalTarget(message.target?.url), source = Core.canonicalTarget(sender.tab.url);
         const cardBinding = message.target?.binding === "user-confirmed" && sameSource(message.target?.sourcePage, sender.tab.url);
         if (!target || (!sameTarget(target, source) && !cardBinding)) throw new Error("來源頁面已改變，請重新選擇貼文或留言並確認名單。");
-        job = Jobs.createJob({ accounts: message.accounts, target: message.target, includeAuthor: message.includeAuthor, actorUsername: message.actorUsername, sourceTabId: sender.tab.id }, now());
+        const nextJob = Jobs.createJob({ accounts: message.accounts, target: message.target, includeAuthor: message.includeAuthor, actorUsername: message.actorUsername, sourceTabId: sender.tab.id }, now());
+        if (message.probeRequest !== undefined && typeof message.probeRequest !== 'boolean') throw new Error('請求驗證選項無效。');
+        if (message.probeRequest === true && nextJob.items.length !== 1) throw new Error('請求驗證一次只處理一個已確認帳號。');
+        job = nextJob;
+        if (message.probeRequest === true) { job.requestProbeEnabled = true; job.executionMode = 'ui-request-probe'; }
         job.sourcePage = sourcePage(sender.tab.url);
         job.extensionVersion = identity.runtimeVersion;
         job.buildVersion = identity.buildVersion; job.runtimeVersion = identity.runtimeVersion;

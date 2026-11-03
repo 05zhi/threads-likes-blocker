@@ -10,7 +10,7 @@ const source=fs.readFileSync(path.join(dir,'background.js'),'utf8');
 const JOB_KEY='threadsBlocker.job.v1';
 const target={url:'https://www.threads.com/@author/post/TEST',kind:'post'};
 const account=username=>({username,profileUrl:`https://www.threads.com/@${username}`});
-const panelIdentity={panelVersion:'0.4.5',extensionId:'fixture-extension'};
+const panelIdentity={panelVersion:'0.4.6',extensionId:'fixture-extension'};
 const initial=()=>({...panelIdentity,type:'BLOCK_START',confirmed:true,target,accounts:[account('alice'),account('bob')],actorUsername:'me',includeAuthor:false});
 const sender={tab:{id:7,url:target.url},url:target.url};
 const clone=value=>value===undefined?undefined:JSON.parse(JSON.stringify(value));
@@ -25,7 +25,7 @@ function harness(options={}) {
   const context=vm.createContext({URL,crypto:require('node:crypto').webcrypto,setTimeout:fn=>setImmediate(fn),clearTimeout:clearImmediate,console,
     chrome:{
       storage:{local:{async get(key){return{[key]:clone(store[key])};},async set(value){Object.assign(store,clone(value));calls.push({kind:'save',job:clone(value[JOB_KEY])});}}},
-      runtime:{id:'fixture-extension',getManifest(){return{version:options.runtimeVersion===undefined?'0.4.5':options.runtimeVersion}},onMessage:{addListener(fn){listeners.message=fn;}}},
+      runtime:{id:'fixture-extension',getManifest(){return{version:options.runtimeVersion===undefined?'0.4.6':options.runtimeVersion}},onMessage:{addListener(fn){listeners.message=fn;}}},
       action:{onClicked:{addListener(fn){listeners.action=fn;}},async setBadgeText(){},async setTitle(){}},
       tabs:{
         onRemoved:{addListener(fn){listeners.removed=fn;}},onUpdated:{addListener(fn){listeners.updated=fn;}},onActivated:{addListener(fn){listeners.activated=fn;}},
@@ -36,6 +36,10 @@ function harness(options={}) {
       },
       scripting:{async executeScript(value){
         if(value.files){calls.push({kind:'inject',tabId:value.target.tabId,files:Array.from(value.files)});return[];}
+        if(value.world==='MAIN'){
+          if(String(value.func).includes('.begin()')){calls.push({kind:'probe-begin'});if(options.failProbe)throw new Error('probe failed');return[{result:{active:true}}];}
+          calls.push({kind:'probe-finish'});return[{result:{records:[],directRequestVerified:true,secret:'MUST_NOT_PERSIST'}}];
+        }
         const args=value.args?.[0];
         if(args&&typeof args==='object'&&args.phase){
           const call={kind:'adapter',tabId:value.target.tabId,...clone(args)};calls.push(call);
@@ -61,7 +65,7 @@ function harness(options={}) {
 test('GET exposes background build, runtime and extension identity without requiring a current panel',async()=>{
   const h=harness();await h.ready;
   const response=await h.message({type:'BLOCK_GET'});
-  assert.equal(response.ok,true);assert.equal(response.job,null);assert.equal(response.buildVersion,'0.4.5');assert.equal(response.runtimeVersion,'0.4.5');assert.equal(response.extensionId,'fixture-extension');
+  assert.equal(response.ok,true);assert.equal(response.job,null);assert.equal(response.buildVersion,'0.4.6');assert.equal(response.runtimeVersion,'0.4.6');assert.equal(response.extensionId,'fixture-extension');
   assert.equal(h.calls.some(c=>['create','navigate','inject','adapter','save'].includes(c.kind)),false);
 });
 
@@ -82,9 +86,9 @@ test('legacy, stale and wrong-extension panels cannot start or resume blocking',
 test('mixed background and runtime builds refuse dispatch while legacy pause, stop and GET stay available',async()=>{
   const saved=Jobs.pause(Jobs.createJob({...initial(),sourceTabId:7},'2026-11-03T00:00:00.000Z'),'2026-11-03T00:00:01.000Z');
   const h=harness({runtimeVersion:'0.3.0',saved});await h.ready;h.calls.length=0;
-  const report=await h.message({type:'BLOCK_GET'});assert.equal(report.buildVersion,'0.4.5');assert.equal(report.runtimeVersion,'0.3.0');
+  const report=await h.message({type:'BLOCK_GET'});assert.equal(report.buildVersion,'0.4.6');assert.equal(report.runtimeVersion,'0.3.0');
   for(const type of ['BLOCK_START','BLOCK_RESUME']){
-    const response=await h.message({...initial(),type});assert.equal(response.ok,false);assert.match(response.error,/背景程式版本 0\.4\.5 與套件版本 0\.3\.0/);
+    const response=await h.message({...initial(),type});assert.equal(response.ok,false);assert.match(response.error,/背景程式版本 0\.4\.6 與套件版本 0\.3\.0/);
   }
   assert.equal(h.calls.some(c=>['create','navigate','inject','adapter','save'].includes(c.kind)),false);
   assert.equal((await h.message({type:'BLOCK_PAUSE'})).ok,true);assert.equal((await h.message({type:'BLOCK_STOP'})).ok,true);assert.equal(h.job().status,'stopped');
@@ -169,7 +173,7 @@ test('runner prepares before confirming and processes a selected account once',a
   await until(()=>h.job()?.status==='completed','completion');
   assert.deepEqual(h.phases(),['prepare','confirm']);assert.equal(h.job().items[0].status,'success');assert.equal(h.job().items[0].attempts,1);
   assert.equal(h.calls.find(c=>c.kind==='adapter'&&c.phase==='confirm').confirmationToken,'mock-token');
-  for(const key of ['extensionVersion','buildVersion','runtimeVersion','clientPanelVersion'])assert.equal(h.job()[key],'0.4.5');assert.equal(h.job().extensionId,'fixture-extension');
+  for(const key of ['extensionVersion','buildVersion','runtimeVersion','clientPanelVersion'])assert.equal(h.job()[key],'0.4.6');assert.equal(h.job().extensionId,'fixture-extension');
   await until(()=>h.calls.some(c=>c.kind==='remove'),'worker cleanup');assert.equal(h.job().workerTabId,null);
 });
 test('only one job can run or remain paused at a time',async()=>{
@@ -313,5 +317,44 @@ test('a confirmation-phase deferral must explicitly attest that final action was
     await h.ready;await h.message(initial());await until(()=>h.job().status==='paused'&&h.job().current===null,'confirmation outcome');
     assert.equal(h.job().items[0].status,evidence.finalActionAttempted===false?'pending':'unknown');
     assert.deepEqual(h.phases(),['prepare','confirm']);
+  }
+});
+
+
+test('request probe requires exactly one confirmed target before creating a job or worker',async()=>{
+  for(const payload of [{...initial(),probeRequest:true},{...initial(),probeRequest:'yes'}, {...initial(),accounts:[account('alice')],probeRequest:true,confirmed:false}]){
+    const h=harness();await h.ready;const result=await h.message(payload);
+    assert.equal(result.ok,false);assert.equal(h.job(),null);assert.equal(h.calls.some(c=>c.kind==='create'),false);
+  }
+});
+
+test('a single-target UI probe captures diagnostics without enabling direct requests',async()=>{
+  const h=harness();await h.ready;await h.message({...initial(),accounts:[account('alice')],probeRequest:true});
+  await until(()=>h.job().status==='completed','probe completion');
+  assert.deepEqual(h.phases(),['prepare','confirm']);assert.equal(h.job().executionMode,'ui-request-probe');
+  assert.equal(h.calls.filter(c=>c.kind==='probe-begin').length,1);assert.equal(h.calls.filter(c=>c.kind==='probe-finish').length,1);
+  assert.equal(h.job().requestProbe.directRequestVerified,false);assert.equal(h.job().requestProbe.scopeVerified,false);
+  assert.equal(JSON.stringify(h.store).includes('MUST_NOT_PERSIST'),false);
+});
+
+test('normal jobs do not install request observers',async()=>{
+  const h=harness();await h.ready;await h.message({...initial(),accounts:[account('alice')]});
+  await until(()=>h.job().status==='completed','normal completion');
+  assert.equal(h.calls.some(c=>c.kind==='probe-begin'),false);assert.equal(h.calls.some(c=>c.files?.includes('request-probe.js')),false);
+});
+
+test('observer startup failure stops a probe before any UI block action',async()=>{
+  const h=harness({failProbe:true});await h.ready;await h.message({...initial(),accounts:[account('alice')],probeRequest:true});
+  await until(()=>h.job().status==='paused'&&h.job().current===null,'probe failure');assert.deepEqual(h.phases(),[]);
+  assert.equal(h.job().items[0].status,'needs-attention');
+});
+
+test('pause and stop during a probe clean up observation and never submit the final confirmation',async()=>{
+  for(const type of ['BLOCK_PAUSE','BLOCK_STOP']){
+    const prepare=gate(),h=harness({adapter:()=>prepare.promise});await h.ready;await h.message({...initial(),accounts:[account('alice')],probeRequest:true});
+    await until(()=>h.phases().includes('prepare'),'probe preparation');await h.message({type});
+    prepare.resolve([{result:{status:'prepared',confirmationToken:'t'}}]);
+    await until(()=>h.calls.some(c=>c.kind==='probe-finish'),'observer cleanup');
+    assert.deepEqual(h.phases(),['prepare']);assert.equal(h.job().status,type==='BLOCK_PAUSE'?'paused':'stopped');
   }
 });
