@@ -171,11 +171,11 @@
     return next;
   }
 
-  function claimParallel(job, limit = 10, nowISO, preferred) {
+  function claimParallel(job, limit = job.items.length, nowISO, preferred) {
     const next = copy(job), now = time(nowISO);
     if (next.status !== 'running') return next;
     next.activeUsernames ||= [];
-    if (next.activeUsernames.length >= Math.min(10, limit)) return next;
+    if (next.activeUsernames.length >= Math.min(next.items.length, limit)) return next;
     const pending = next.items.filter(row => row.status === 'pending');
     const item = pending.find(row => row.username === preferred) || pending[0];
     if (!item) {

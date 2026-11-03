@@ -50,25 +50,22 @@ test('template handoff intercepts original XHR once and never exports secret req
  const xhr=new f.ctx.XMLHttpRequest();xhr.open('POST','https://www.threads.com/api/graphql');xhr.send(body());
  assert.equal(direct.status().captured,true);
  const result=await direct.handoffParallel({accounts:['alice','bob'],actorUsername:'me',seedUsername:'alice'});
- assert.equal(result.ready,true);assert.equal(f.calls.filter(c=>c.init.method==='POST').length,0);
+ assert.equal(result.ready,true);assert.equal(result.concurrency,2);assert.equal(f.calls.filter(c=>c.init.method==='POST').length,0);
  assert.equal((await direct.submit()).attempted,false);assert.equal((await direct.handoffParallel({})).ready,false);
  await f.api.prepare({username:'bob'});const sent=await f.api.submit({username:'bob'});
  assert.equal(sent.accepted,true);assert.equal(JSON.stringify([result,sent,direct.status()]).includes('PRIVATE'),false);
  direct.dispose();assert.equal(f.api.status().ready,false);
 });
-test('ten background POSTs overlap; eleventh waits and pause preserves all in-flight results',async()=>{
- const hold=gate(),f=fixture({post:()=>hold.promise});assert.equal((await f.start()).concurrency,10);
+test('every approved account can submit concurrently; duplicates and unselected accounts cannot',async()=>{
+ const hold=gate(),f=fixture({post:()=>hold.promise});assert.equal((await f.start()).concurrency,13);
  f.ctx.document.visibilityState='hidden';
- const names=['alice','bob','carol','dave','eve',...Array.from({length:6},(_,i)=>'extra'+i)];
+ const names=['alice','bob','carol','dave','eve',...Array.from({length:8},(_,i)=>'extra'+i)];
  for(const username of names)assert.equal((await f.api.prepare({username})).ready,true);
- const pending=names.slice(0,10).map(username=>f.api.submit({username}));
- assert.equal(f.calls.filter(c=>c.init.method==='POST').length,10);assert.equal(f.api.status().active,10);
- assert.equal((await f.api.submit({username:names[10]})).attempted,false);
+ const pending=names.map(username=>f.api.submit({username}));
+ assert.equal(f.calls.filter(c=>c.init.method==='POST').length,13);assert.equal(f.api.status().active,13);
+ for(const username of ['alice','unselected','me'])assert.equal((await f.api.submit({username})).attempted,false);
  f.api.pause();hold.resolve();assert.ok((await Promise.all(pending)).every(r=>r.accepted));
- assert.equal((await f.api.submit({username:names[10]})).attempted,false);
- assert.equal((await f.api.resume()).ready,true);assert.equal((await f.api.submit({username:names[10]})).accepted,true);
- assert.equal((await f.api.submit({username:'alice'})).attempted,false);
- assert.equal(f.ctx.location.href,'https://www.threads.com/@alice');assert.equal(f.calls.filter(c=>c.init.method==='POST').length,11);f.api.dispose();
+ assert.equal(f.api.status().enabled,false);assert.equal(f.ctx.location.href,'https://www.threads.com/@alice');f.api.dispose();
 });
 test('pause during lookup never sends; explicit resume revalidates actor and preserves eligibility',async()=>{
  const hold=gate(),f=fixture({get:name=>name==='bob'?hold.promise:null});await f.start();

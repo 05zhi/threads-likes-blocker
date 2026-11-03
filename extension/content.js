@@ -1,7 +1,7 @@
 /* Collector reads DOM; explicit user-confirmed blocking runs in the background. */
 (() => {
   "use strict";
-  const EXTENSION_VERSION = "0.6.1";
+  const EXTENSION_VERSION = "0.6.2";
   const EXTENSION_ID = chrome.runtime?.id || "";
   const RUNTIME_VERSION = chrome.runtime?.getManifest?.()?.version || EXTENSION_VERSION;
   if (RUNTIME_VERSION !== EXTENSION_VERSION) throw new Error("套件與面板版本不一致，請重新載入擴充功能。");
@@ -61,7 +61,7 @@
           <label id="blockApproval" class="check"><input id="blockConfirmed" type="checkbox"><span>我已檢查勾選名單，確認要封鎖這些帳號。</span></label>
           <div class="buttons"><button id="blockStart" class="primary">一鍵封鎖已選名單</button><button id="blockPause">暫停封鎖</button><button id="blockResume">繼續封鎖</button><button id="blockStop" class="danger">中止封鎖</button></div>
           <div id="blockStatus" role="status" aria-live="polite">尚無封鎖工作</div><div id="blockResults"></div>
-          <p class="hint">首次會開一個工作分頁準備請求，完成後自動回到此處，最多 10 個帳號在背景同時處理。暫停／中止會停止派發，已送出的請求仍可能完成。</p>
+          <p class="hint">首次會開一個工作分頁準備請求，完成後自動回到此處，依已確認名單數量，在背景同時處理其餘所有帳號。暫停／中止會停止派發，已送出的請求仍可能完成。</p>
           <details id="requestProbeTools"><summary>單一帳號診斷</summary><p class="hint">一般「一鍵封鎖」使用背景並行請求。以下工具只接受一個已確認帳號，用於額外核對或匯出網站請求；仍會真的封鎖此人。</p><button id="directStart">驗證直接請求並封鎖此帳號</button><button id="probeStart">僅用網頁封鎖並記錄請求</button><p id="probeStatus" class="hint" role="status"></p></details>
           <p class="hint">會更改 Threads 帳號狀態。暫停／中止不撤銷已完成封鎖；結果不明不會自動重試。</p>
         </section>
@@ -251,7 +251,7 @@
     $("blockExport").disabled = !blockJob;
     const names = { running: "封鎖執行中", paused: "封鎖已暫停", stopped: "封鎖已中止", completed: "佇列已處理完畢（請核對逐筆結果）" };
     const statuses = { pending: "等待", "in-progress": "處理中", success: "封鎖成功", "already-blocked": "已封鎖，略過", skipped: "略過", failed: "失敗", unknown: "結果不明", "needs-attention": "需人工檢查", cancelled: "已取消" };
-    $("blockStatus").textContent = blockJob ? `${names[blockJob.status] || blockJob.status} · ${blockJob.items.filter(a => !["pending", "in-progress"].includes(a.status)).length}/${blockJob.items.length} · 登入 @${blockJob.actorUsername}${blockJob.parallelBatch ? ` · 背景並行 ${(blockJob.activeUsernames || []).length}/${blockJob.concurrency || 3}${blockJob.activeUsernames?.length ? "：@" + blockJob.activeUsernames.join("、@") : ""}` : blockJob.current ? ` · 目前 @${blockJob.current}` : ""}${blockJob.extensionVersion ? `\n工作版本：${blockJob.extensionVersion}${blockJob.extensionVersion !== RUNTIME_VERSION ? "（舊工作紀錄）" : ""}` : ""}\n來源：${blockJob.target.url}\n${blockJob.reason || ""}` : "尚無封鎖工作";
+    $("blockStatus").textContent = blockJob ? `${names[blockJob.status] || blockJob.status} · ${blockJob.items.filter(a => !["pending", "in-progress"].includes(a.status)).length}/${blockJob.items.length} · 登入 @${blockJob.actorUsername}${blockJob.parallelBatch ? ` · 背景並行 ${(blockJob.activeUsernames || []).length}/${blockJob.concurrency || blockJob.items.length}${blockJob.activeUsernames?.length ? "：@" + blockJob.activeUsernames.join("、@") : ""}` : blockJob.current ? ` · 目前 @${blockJob.current}` : ""}${blockJob.extensionVersion ? `\n工作版本：${blockJob.extensionVersion}${blockJob.extensionVersion !== RUNTIME_VERSION ? "（舊工作紀錄）" : ""}` : ""}\n來源：${blockJob.target.url}\n${blockJob.reason || ""}` : "尚無封鎖工作";
     const resultList = $("blockResults"); resultList.replaceChildren();
     if (blockJob) for (const item of blockJob.items.filter(a => a.status !== "pending").slice(-100)) {
       const row = document.createElement("div"); row.className = "account"; row.textContent = `@${item.username}${item.role === "author" ? "（作者）" : ""}：${statuses[item.status] || item.status}`;

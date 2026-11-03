@@ -1,6 +1,6 @@
 {
   "name": "threads-likes-blocker",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "private": true,
   "description": "Review visible Threads likers and explicitly block selected accounts using the website UI.",
   "scripts": {

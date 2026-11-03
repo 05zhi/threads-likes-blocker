@@ -96,7 +96,7 @@ async function runParallel() {
       job.parallelCalibration={ready:result?.ready===true,reason:typeof result?.reason==='string'?result.reason.slice(0,80):'',checks:Object.fromEntries(Object.entries(result?.checks||{}).filter(([k,v])=>/^[A-Za-z]{1,30}$/.test(k)&&typeof v==='boolean'))};await save();
       if(!authorized()){await pauseParallel();return await record(username,deferred());}
       if(result?.ready!==true)throw new Error('背景身份核對失敗：'+(result?.reason||'missing-result'));
-      job.parallelReady=true;job.phase='background-parallel';job.reason='最多 10 筆背景並行；無須保持工作分頁在前景。';await save();
+      job.parallelReady=true;job.phase='background-parallel';job.reason=`依已確認名單並行，最多 ${job.items.length} 筆；無須保持工作分頁在前景。`;await save();
       await chrome.tabs.update(job.sourceTabId,{active:true});
       await process(username);
     } catch(error) {await record(username,{status:triggered&&!captured?'unknown':'needs-attention',reason:error.message});}
@@ -118,8 +118,8 @@ async function runParallel() {
     }
     const pool=new Set();
     while(authorized()||pool.size) {
-      while(authorized()&&pool.size<10) {
-        const username=await claim(10);
+      while(authorized()&&pool.size<job.items.length) {
+        const username=await claim(job.items.length);
         if(!username)break;
         const task=process(username).finally(()=>pool.delete(task));pool.add(task);
       }

@@ -56,14 +56,14 @@ class CDP {
     const setup = seed => `
       globalThis.__threadsProbeTabId=123;
       globalThis.__saved=${JSON.stringify(seed||{})};
-      globalThis.__messages=[];globalThis.__mockJob=null;globalThis.__confirmAllowed=true;globalThis.__confirmCalls=[];globalThis.__actorUsername='owner';globalThis.__backgroundBuild='0.6.1';globalThis.__backgroundId='fixture-extension';
+      globalThis.__messages=[];globalThis.__mockJob=null;globalThis.__confirmAllowed=true;globalThis.__confirmCalls=[];globalThis.__actorUsername='owner';globalThis.__backgroundBuild='0.6.2';globalThis.__backgroundId='fixture-extension';
       globalThis.__deferStartResponse=false;globalThis.__pendingStartResponse=null;globalThis.__deferGetResponses=false;globalThis.__pendingGetResponses=[];globalThis.__deferActorResponse=false;globalThis.__pendingActorResponse=null;
       globalThis.confirm=message=>{__confirmCalls.push(message);return __confirmAllowed};
       globalThis.__originalCreateURL=URL.createObjectURL.bind(URL);
       URL.createObjectURL=blob=>{globalThis.__exportBlob=blob;return __originalCreateURL(blob)};
       globalThis.chrome={
         storage:{local:{get:async k=>({[k]:__saved[k]}),set:async o=>{Object.assign(__saved,JSON.parse(JSON.stringify(o)))},remove:async k=>{delete __saved[k]}}},
-        runtime:{id:'fixture-extension',getManifest:()=>({version:'0.6.1'}),sendMessage:async message=>{
+        runtime:{id:'fixture-extension',getManifest:()=>({version:'0.6.2'}),sendMessage:async message=>{
           __messages.push(JSON.parse(JSON.stringify(message)));
           if(message.type==='BLOCK_ACTOR'){const result=__actorUsername?{ok:true,actorUsername:__actorUsername}:{ok:false,error:'Cannot read the signed-in actor'};if(__deferActorResponse)return new Promise(resolve=>{__pendingActorResponse=()=>resolve(result)});return result;}
           if(message.type==='BLOCK_START'){
@@ -72,7 +72,7 @@ class CDP {
           }else if(message.type==='BLOCK_PAUSE'&&__mockJob)__mockJob.status='paused';
           else if(message.type==='BLOCK_RESUME'&&__mockJob)__mockJob.status='running';
           else if(message.type==='BLOCK_STOP'&&__mockJob){__mockJob.status='stopped';for(const item of __mockJob.items)if(item.status==='pending')item.status='cancelled';}
-          const response={ok:true,job:JSON.parse(JSON.stringify(__mockJob)),buildVersion:__backgroundBuild,runtimeVersion:'0.6.1',extensionId:__backgroundId};
+          const response={ok:true,job:JSON.parse(JSON.stringify(__mockJob)),buildVersion:__backgroundBuild,runtimeVersion:'0.6.2',extensionId:__backgroundId};
           if(message.type==='BLOCK_GET'&&__deferGetResponses)return new Promise(resolve=>__pendingGetResponses.push(()=>resolve(response)));
           if(message.type==='BLOCK_START'&&__deferStartResponse)return new Promise(resolve=>{__pendingStartResponse=()=>resolve(response)});
           return response;
@@ -86,7 +86,7 @@ class CDP {
     await check('source and actor are automatic with no type or optional input fields',async()=>{
       assert.equal(await cdp.eval(`${ui}.getElementById('target').type`),'hidden');assert.equal(await cdp.eval(`${ui}.getElementById('target').value`),'https://www.threads.com/@author/post/TEST');assert.match(await cdp.eval(`${ui}.getElementById('sourceInfo').textContent`),/自動辨識 @author/);assert.match(await cdp.eval(`${ui}.getElementById('actorInfo').textContent`),/@owner/);
       assert.equal(await cdp.eval(`${ui}.querySelectorAll('#kind,#declaredCount,#actor,#targetConfirmed').length`),0);assert.equal(await cdp.eval(`${ui}.getElementById('tools').open`),false);assert.equal(await cdp.eval(`${ui}.getElementById('blockingStep').hidden`),true);
-      assert.equal(await cdp.eval(`${ui}.getElementById('buildInfo').textContent`),'0.6.1 · 套件 0.6.1 · 背景 0.6.1');assert.equal(await cdp.eval(`document.querySelector('#threads-likes-probe-host').dataset.extensionId`),'fixture-extension');assert.equal(await cdp.eval(`globalThis.__threadsLikesProbe.version`),'0.6.1');
+      assert.equal(await cdp.eval(`${ui}.getElementById('buildInfo').textContent`),'0.6.2 · 套件 0.6.2 · 背景 0.6.2');assert.equal(await cdp.eval(`document.querySelector('#threads-likes-probe-host').dataset.extensionId`),'fixture-extension');assert.equal(await cdp.eval(`globalThis.__threadsLikesProbe.version`),'0.6.2');
       assert.equal(await cdp.eval(`getComputedStyle(${ui}.querySelector('section:not([hidden])')).borderTopWidth`),'1px');
       assert.equal(await cdp.eval(`(()=>{const section=${ui}.getElementById('sourceStep');return section.lastElementChild.getBoundingClientRect().bottom<=section.getBoundingClientRect().bottom})()`),true);
     });
@@ -239,7 +239,7 @@ class CDP {
       await click('blockExport');const exported=await cdp.eval(`__exportBlob.text().then(JSON.parse)`);assert.equal(exported.id,'fixture-job');assert.equal(exported.status,'stopped');assert.deepEqual(exported.items.map(a=>[a.username,a.role,a.status]),[['alice','liker','cancelled'],['author','author','cancelled']]);assert.ok(exported.exportedAt);assert.equal((await messages()).length,4);
     });
     await check('combined diagnostic export includes collector, blocking job and extension version',async()=>{
-      await click('diagnostics');const exported=await cdp.eval(`__exportBlob.text().then(JSON.parse)`);assert.equal(exported.extensionVersion,'0.6.1');assert.equal(exported.runtimeVersion,'0.6.1');assert.equal(exported.panelVersion,'0.6.1');assert.equal(exported.extensionId,'fixture-extension');assert.equal(exported.collector.target.postId,'TEST');assert.equal(exported.blockingJob.id,'fixture-job');assert.equal(exported.blockingJob.status,'stopped');assert.ok(exported.exportedAt);assert.equal((await messages()).length,4);
+      await click('diagnostics');const exported=await cdp.eval(`__exportBlob.text().then(JSON.parse)`);assert.equal(exported.extensionVersion,'0.6.2');assert.equal(exported.runtimeVersion,'0.6.2');assert.equal(exported.panelVersion,'0.6.2');assert.equal(exported.extensionId,'fixture-extension');assert.equal(exported.collector.target.postId,'TEST');assert.equal(exported.blockingJob.id,'fixture-job');assert.equal(exported.blockingJob.status,'stopped');assert.ok(exported.exportedAt);assert.equal((await messages()).length,4);
     });
     await cdp.eval(`${ui}.querySelector('main').scrollTop=${ui}.querySelector('main').scrollHeight`);await delay(120);
     await cdp.call('Page.captureScreenshot',{format:'png'}).then(r=>fs.writeFile(path.join(scratch,'blocking-preview.png'),Buffer.from(r.data,'base64')));
@@ -299,7 +299,7 @@ class CDP {
       await click('blockReturn');await delay(100);assert.equal((await messages()).at(-1).type,'BLOCK_STOP');assert.equal(await cdp.eval(`${ui}.getElementById('workBanner').hidden`),true);assert.equal(await cdp.eval(`${ui}.getElementById('pick').disabled`),false);
     });
     await check('a stale or different background is rejected before START opens any work',async()=>{
-      for(const identity of [{build:'0.3.0',id:'fixture-extension'},{build:null,id:'fixture-extension'},{build:'0.6.1',id:'other-extension'}]){
+      for(const identity of [{build:'0.3.0',id:'fixture-extension'},{build:null,id:'fixture-extension'},{build:'0.6.2',id:'other-extension'}]){
         await freshLegacyPanel();await cdp.eval(`__backgroundBuild=${JSON.stringify(identity.build)};__backgroundId=${JSON.stringify(identity.id)}`);await click('blockStart');await delay(100);
         assert.equal((await messages()).length,0);assert.equal(await cdp.eval('__mockJob'),null);assert.equal(await cdp.eval(`${ui}.getElementById('blockStart').disabled`),true);assert.match(await cdp.eval(`${ui}.getElementById('notice').textContent`),/不相容/);assert.equal(await cdp.eval(`${ui}.getElementById('blockConfirmed').checked`),false);
       }
@@ -377,7 +377,7 @@ class CDP {
       await cdp.eval(setup());await cdp.eval(core);
     }
     await check('legacy and other-extension panels are never reused or mixed with new content',async()=>{
-      for(const identity of [null,{version:'0.6.1',extensionId:'other-extension'}]){
+      for(const identity of [null,{version:'0.6.2',extensionId:'other-extension'}]){
         await freshBootstrap();await cdp.eval(`globalThis.__legacyShows=0;globalThis.__threadsLikesProbe={...${JSON.stringify(identity||{})},show(){__legacyShows++}};const oldHost=document.createElement('div');oldHost.id='threads-likes-probe-host';document.documentElement.append(oldHost)`);
         await assert.rejects(()=>cdp.eval(content),/頁面仍有舊版工具/);assert.equal(await cdp.eval('__legacyShows'),0);assert.equal(await cdp.eval(`document.querySelectorAll('#threads-likes-probe-host').length`),1);assert.equal(await cdp.eval(`__messages.some(m=>m.type==='BLOCK_START')`),false);
       }

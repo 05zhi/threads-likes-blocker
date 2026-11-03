@@ -1,7 +1,7 @@
 /* Only an explicit panel command starts a blocking job. */
 importScripts("core.js", "job.js", "request-probe-core.js", "parallel-runner.js");
 const Core = globalThis.ThreadsProbeCore, Jobs = globalThis.ThreadsBlockJob;
-const BUILD_VERSION = "0.6.1";
+const BUILD_VERSION = "0.6.2";
 const JOB_KEY = "threadsBlocker.job.v1";
 let job = null, runner = null, serial = Promise.resolve(), workerOwnership = null;
 const openingTabs = new Set();
@@ -332,7 +332,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (message.parallelBatch) {
           const previouslyDone = new Set(job?.actorUsername?.toLowerCase() === nextJob.actorUsername.toLowerCase() ? job.items.filter(row => ['success','already-blocked'].includes(row.status)).map(row => row.username.toLowerCase()) : []);
           nextJob.parallelSeed = nextJob.items.find(row => !previouslyDone.has(row.username.toLowerCase()))?.username;
-          nextJob.parallelBatch = true; nextJob.parallelReady = false; nextJob.executionMode = 'background-parallel'; nextJob.concurrency = 10;
+          nextJob.parallelBatch = true; nextJob.parallelReady = false; nextJob.executionMode = 'background-parallel'; nextJob.concurrency = nextJob.items.length;
         }
         job = nextJob;
         if (message.probeRequest === true) { job.requestProbeEnabled = true; job.executionMode = 'ui-request-probe'; }
@@ -350,7 +350,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         else if (message.type === "BLOCK_RESUME") {
           if (typeof message.jobId !== "string" || message.jobId !== job.id) throw new Error("原封鎖工作已變更，請重新核對目前工作後再繼續。");
           if (!sameSource(sender.tab.url, job.sourcePage || job.target.url) || String(message.actorUsername || "").trim().replace(/^@/, "").toLowerCase() !== job.actorUsername.toLowerCase()) throw new Error("請回原來源頁面，並確認目前登入的仍是原帳號後繼續。");
-          job = Jobs.resume(job, now()); if (job.parallelBatch) job.concurrency = 10; job.sourceTabId = sender.tab.id; if (job.directBatch) job.directBatchValidated = false;
+          job = Jobs.resume(job, now()); if (job.parallelBatch) job.concurrency = job.items.length; job.sourceTabId = sender.tab.id; if (job.directBatch) job.directBatchValidated = false;
           job.buildVersion = identity.buildVersion; job.runtimeVersion = identity.runtimeVersion;
           job.extensionId = identity.extensionId; job.clientPanelVersion = message.panelVersion;
         } else throw new Error("無法辨識工作指令。");
