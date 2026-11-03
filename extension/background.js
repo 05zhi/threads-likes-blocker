@@ -1,14 +1,14 @@
 /* Only an explicit panel command starts a blocking job. */
-importScripts("core.js", "job.js", "request-probe-core.js");
+importScripts("core.js", "job.js", "request-probe-core.js", "parallel-runner.js");
 const Core = globalThis.ThreadsProbeCore, Jobs = globalThis.ThreadsBlockJob;
-const BUILD_VERSION = "0.5.0";
+const BUILD_VERSION = "0.6.0";
 const JOB_KEY = "threadsBlocker.job.v1";
 let job = null, runner = null, serial = Promise.resolve(), workerOwnership = null;
 const openingTabs = new Set();
 const now = () => new Date().toISOString();
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 const ready = chrome.storage.local.get(JOB_KEY).then(async saved => {
-  if (saved[JOB_KEY]) { job = Jobs.recover(saved[JOB_KEY], now()); job.workerTabId = null; if (job.directBatch) job.directBatchValidated = false; await save(); }
+  if (saved[JOB_KEY]) { job = Jobs.recover(saved[JOB_KEY], now()); job.workerTabId = null; job.parallelReady = false; if (job.directBatch) job.directBatchValidated = false; await save(); }
 });
 function safeOrigin(raw) {
   try { const u = new URL(raw); return u.protocol === "https:" && !u.username && !u.password && !u.port && ["threads.com", "www.threads.com", "threads.net", "www.threads.net"].includes(u.hostname); } catch { return false; }
@@ -191,6 +191,7 @@ async function pauseForPanelUpgrade(tabId) {
   await mutate(async () => {
     if (job?.sourceTabId !== tabId || !["running", "paused"].includes(job.status)) return;
     job = Jobs.pause(job, now());
+    await pauseParallel();
     job.reason = "工具版本已更新，來源頁面重新載入；封鎖工作維持暫停，請核對後手動繼續。";
     await save();
   });
@@ -216,7 +217,7 @@ async function reloadForPanelUpgrade(tabId, expectedSource) {
 }
 function kick() {
   if (runner || job?.status !== "running") return;
-  runner = run().finally(() => { runner = null; if (job?.status === "running") kick(); });
+  runner = (job.parallelBatch ? runParallel() : run()).finally(() => { runner = null; if (job?.status === "running") kick(); });
 }
 async function defer(username) {
   await mutate(async () => {
@@ -326,6 +327,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (message.directRequestTest === true && (nextJob.items.length !== 1 || message.probeRequest === true)) throw new Error('直接請求驗證只允許單一帳號，不能同時開啟觀察模式。');
         if (message.directBatch !== undefined && typeof message.directBatch !== 'boolean') throw new Error('直接批次選項無效。');
         if (message.directBatch === true && (message.directRequestTest === true || message.probeRequest === true)) throw new Error('批次工作不能同時啟用單人診斷模式。');
+        if (message.parallelBatch !== undefined && typeof message.parallelBatch !== 'boolean') throw new Error('背景並行選項無效。');
+        if (message.parallelBatch && (message.directBatch || message.directRequestTest || message.probeRequest)) throw new Error('背景並行不能同時啟用其他模式。');
+        if (message.parallelBatch) {
+          const previouslyDone = new Set(job?.actorUsername?.toLowerCase() === nextJob.actorUsername.toLowerCase() ? job.items.filter(row => ['success','already-blocked'].includes(row.status)).map(row => row.username.toLowerCase()) : []);
+          nextJob.parallelSeed = nextJob.items.find(row => !previouslyDone.has(row.username.toLowerCase()))?.username;
+          nextJob.parallelBatch = true; nextJob.parallelReady = false; nextJob.executionMode = 'background-parallel'; nextJob.concurrency = 3;
+        }
         job = nextJob;
         if (message.probeRequest === true) { job.requestProbeEnabled = true; job.executionMode = 'ui-request-probe'; }
         if (message.directRequestTest === true) { job.directRequestTest = true; job.executionMode = 'single-direct-verification'; }
@@ -337,8 +345,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         await save(); kick();
       } else {
         if (!job) throw new Error("目前沒有封鎖工作。");
-        if (message.type === "BLOCK_PAUSE") job = Jobs.pause(job, now());
-        else if (message.type === "BLOCK_STOP") job = Jobs.stop(job, now());
+        if (message.type === "BLOCK_PAUSE") { job = Jobs.pause(job, now()); await pauseParallel(); }
+        else if (message.type === "BLOCK_STOP") { job = Jobs.stop(job, now()); await pauseParallel(); }
         else if (message.type === "BLOCK_RESUME") {
           if (typeof message.jobId !== "string" || message.jobId !== job.id) throw new Error("原封鎖工作已變更，請重新核對目前工作後再繼續。");
           if (!sameSource(sender.tab.url, job.sourcePage || job.target.url) || String(message.actorUsername || "").trim().replace(/^@/, "").toLowerCase() !== job.actorUsername.toLowerCase()) throw new Error("請回原來源頁面，並確認目前登入的仍是原帳號後繼續。");
@@ -347,7 +355,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           job.extensionId = identity.extensionId; job.clientPanelVersion = message.panelVersion;
         } else throw new Error("無法辨識工作指令。");
         await save(); if (job.status === "running") kick();
-        if (job.status === "stopped" && !runner) await closeWorker(job);
+        if (job.status === "stopped" && !runner) { if(job.parallelBatch){try{await directCall(job.workerTabId,'dispose');}catch{}} await closeWorker(job); }
       }
       return { ok: true, job };
     });
@@ -358,18 +366,19 @@ chrome.tabs.onRemoved.addListener(tabId => {
   ready.then(() => mutate(async () => {
     if (!locked(job)) return;
     if (tabId === job.workerTabId) { job = Jobs.recover(job, now()); job.workerTabId = null; job.reason = "工作分頁已關閉，未確認的結果不會重試。"; await save(); }
-    else if (tabId === job.sourceTabId) { job = Jobs.pause(job, now()); job.reason = "來源分頁已關閉，工作已暫停。"; await save(); }
+    else if (tabId === job.sourceTabId) { job = Jobs.pause(job, now()); await pauseParallel(); job.reason = "來源分頁已關閉，工作已暫停。"; await save(); }
   })).catch(() => {});
 });
 chrome.tabs.onActivated?.addListener(() => {
   ready.then(async () => {
     const taskId = job?.id, workerId = job?.workerTabId;
-    if (job?.status !== 'running' || !Number.isInteger(workerId)) return;
+    if (job?.status !== 'running' || job.parallelReady || !Number.isInteger(workerId)) return;
     const worker = await chrome.tabs.get(workerId);
     if (worker.active !== false) return;
     await mutate(async () => {
       if (job?.id !== taskId || job.workerTabId !== workerId || job.status !== 'running') return;
       job = Jobs.pause(job, now());
+      await pauseParallel();
       job.reason = '已離開工作分頁，封鎖暫停；請回來源面板按繼續。';
       await save();
     });
@@ -379,7 +388,7 @@ chrome.tabs.onUpdated.addListener((tabId, changes) => {
   if (!changes.url) return;
   ready.then(() => mutate(async () => {
     if (job?.status === "running" && tabId === job.sourceTabId) {
-      if (!sameSource(changes.url, job.sourcePage || job.target.url)) { job = Jobs.pause(job, now()); job.reason = "來源頁面改變，工作已暫停。"; await save(); }
+      if (!sameSource(changes.url, job.sourcePage || job.target.url)) { job = Jobs.pause(job, now()); await pauseParallel(); job.reason = "來源頁面改變，工作已暫停。"; await save(); }
     }
   })).catch(() => {});
 });

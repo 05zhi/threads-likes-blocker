@@ -130,8 +130,9 @@
     for (const item of next.items) {
       if (item.status === "pending") { item.status = "cancelled"; item.reason = "Cancelled by user"; item.finishedAt = now; }
     }
-    const item = currentItem(next);
-    if (item) { item.status = "unknown"; item.reason = "Stopped while action was in flight; outcome is unknown until reported"; item.finishedAt = now; }
+    for (const item of next.items.filter(row => row.status === 'in-progress' || row.username === next.current)) {
+      item.status = "unknown"; item.reason = "Stopped while action was in flight; outcome is unknown until reported"; item.finishedAt = now;
+    }
     next.status = "stopped"; next.reason = "Stopped by user; pending accounts cancelled"; next.updatedAt = now; next.finishedAt = now;
     // Retain current so the in-flight operation can report its actual outcome.
     return next;
@@ -146,7 +147,7 @@
         item.status = "unknown"; item.reason = "Interrupted action; verify manually, never retry automatically"; item.finishedAt = now;
       }
     }
-    next.current = null; next.updatedAt = now;
+    next.current = null; next.activeUsernames = []; next.parallelReady = false; next.updatedAt = now;
     if (next.status !== "stopped") {
       next.status = "paused"; next.reason = "Recovered after interruption; explicit resume is required";
     }
@@ -170,7 +171,41 @@
     return next;
   }
 
-  const api = Object.freeze({ createJob, nextItem, recordResult, pause, resume, stop, recover, deferPrepared });
+  function claimParallel(job, limit = 3, nowISO, preferred) {
+    const next = copy(job), now = time(nowISO);
+    if (next.status !== 'running') return next;
+    next.activeUsernames ||= [];
+    if (next.activeUsernames.length >= Math.min(3, limit)) return next;
+    const pending = next.items.filter(row => row.status === 'pending');
+    const item = pending.find(row => row.username === preferred) || pending[0];
+    if (!item) {
+      if (!next.activeUsernames.length) { next.status = 'completed'; next.finishedAt = now; }
+      return next;
+    }
+    if (item.attempts !== 0) { item.status = 'unknown'; next.status = 'paused'; next.reason = '先前已派發的帳號不會重試。'; return next; }
+    item.status = 'in-progress'; item.attempts = 1; item.startedAt = now;
+    next.activeUsernames.push(item.username); next.current = next.activeUsernames[0]; next.updatedAt = now;
+    return next;
+  }
+  function recordParallel(job, username, result, nowISO) {
+    if (!job.activeUsernames?.includes(username)) throw new Error('Result is not an active parallel account');
+    const next = copy(job), now = time(nowISO), item = next.items.find(row => row.username === username);
+    const deferred = result.status === 'deferred' && result.evidence?.finalActionAttempted === false;
+    if (!deferred && !RESULT_STATUSES.has(result.status)) throw new Error('Invalid parallel result');
+    item.status = deferred ? (next.status === 'stopped' ? 'cancelled' : 'pending') : result.status;
+    item.reason = result.reason || '';
+    item.finishedAt = deferred && next.status !== 'stopped' ? null : now;
+    if (deferred) { item.attempts = 0; item.startedAt = null; }
+    if (result.evidence) item.evidence = copy(result.evidence);
+    next.activeUsernames = next.activeUsernames.filter(name => name !== username);
+    next.current = next.activeUsernames[0] || null; next.updatedAt = now;
+    if (next.status !== 'stopped' && (deferred || ['unknown','needs-attention','failed'].includes(result.status))) {
+      next.status = 'paused'; next.reason = item.reason;
+    }
+    if (next.status === 'running' && !next.current && !next.items.some(row => row.status === 'pending')) { next.status = 'completed'; next.finishedAt = now; }
+    return next;
+  }
+  const api = Object.freeze({ createJob, nextItem, recordResult, pause, resume, stop, recover, deferPrepared, claimParallel, recordParallel });
   root.ThreadsBlockJob = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

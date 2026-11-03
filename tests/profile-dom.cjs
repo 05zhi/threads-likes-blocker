@@ -28,6 +28,13 @@ async function run() {
     const adapter=await fs.readFile(path.join(root,'extension/block-adapter.js'),'utf8');
     await cdp.eval(adapter);
     const check=async(name,fn)=>{await fn();passed.push(name);console.log('PASS',name);};
+    await cdp.eval(await fs.readFile(path.join(root,'extension/parallel-core.js'),'utf8'));
+    await check('background profile resolver uses real DOMParser with inert route JSON',async()=>{
+      const route={initialRouteInfo:{route:{tracePolicy:'barcelona.profilePage',url:'/@fixture.alpha',params:{vanity:'@fixture.alpha'},actorID:'900',rootView:{props:{user_id:'101',is_self_profile:false}},hostableView:{props:{user_id:'101',is_self_profile:false}}}}};
+      const html='<script>globalThis.UNSAFE_EXECUTED=true</script><script type="application/json">'+JSON.stringify({require:[['Fixture',null,[route]]]}).replaceAll('@','\\u0040')+'</script>';
+      const result=await cdp.eval(`ThreadsParallelCore.profileFromHTML(${JSON.stringify(html)},'fixture.alpha')`);
+      assert.equal(result.userId,'101');assert.equal(result.actorId,'900');assert.equal(result.diagnostics.routeCandidates,2);assert.equal(await cdp.eval('globalThis.UNSAFE_EXECUTED === undefined'),true);
+    });
     for(const [name,username] of [['alpha','fixture.alpha'],['beta','fixture.beta']]) {
       const header=await fs.readFile(path.join(__dirname,'fixtures',`profile-header-${name}.html`),'utf8');
       const html=`<!doctype html><meta charset="utf-8"><style>body{font:16px system-ui}svg{width:24px;height:24px}img{width:40px;height:40px}</style><nav><a href="https://www.threads.com/@owner" aria-label="Profile">Profile</a></nav><div id="profile-header">${header}</div><article><a href="https://www.threads.com/@${username}/post/FAKE">${username}</a><button aria-label="More">Post more</button></article>`;

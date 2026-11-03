@@ -3,7 +3,7 @@
  * Raw request material lives only in this closure and is never returned. */
 (function (root) {
   'use strict';
-  if (root.ThreadsDirectRequest?.version === 4) return;
+  if (root.ThreadsDirectRequest?.version === 5) return;
   let state = null;
   const Core = root.ThreadsRequestProbeCore;
   function arm({ username }) {
@@ -114,11 +114,22 @@
     finally { root.clearTimeout(timer); candidate.body = null; candidate.headers = null; }
     return { attempted: true, accepted, report: Core.cleanReport(s) };
   }
+  async function handoffParallel(input) {
+    const s = state;
+    if (!s || s.closed || s.attempted || s.refused || !s.candidate || !s.bound()) return { ready: false, reason: 'capture-not-ready' };
+    s.attempted = true;
+    const candidate = s.candidate; s.candidate = null;
+    root.clearTimeout(s.timer);
+    s.timer = root.setTimeout(dispose, 600000);
+    try { return await root.ThreadsParallelRequest.start({ ...input, candidate, fetch: s.fetch, href: s.href }); }
+    finally { candidate.body = null; candidate.headers = null; }
+  }
   function dispose() {
+    root.ThreadsParallelRequest?.dispose();
     if (!state) return;
     const previous = state; state = null;
     previous.closed = true; previous.candidate = null; previous.restore?.(); root.clearTimeout(previous.timer);
     for (const pending of previous.held.splice(0)) pending.reject(new Error('Direct request test ended'));
   }
-  root.ThreadsDirectRequest = Object.freeze({ version: 4, arm, status, submit, dispose });
+  root.ThreadsDirectRequest = Object.freeze({ version: 5, arm, status, submit, handoffParallel, dispose });
 })(globalThis);
