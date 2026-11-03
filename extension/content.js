@@ -1,7 +1,7 @@
 /* Collector reads DOM; explicit user-confirmed blocking runs in the background. */
 (() => {
   "use strict";
-  const EXTENSION_VERSION = "0.4.7";
+  const EXTENSION_VERSION = "0.4.8";
   const EXTENSION_ID = chrome.runtime?.id || "";
   const RUNTIME_VERSION = chrome.runtime?.getManifest?.()?.version || EXTENSION_VERSION;
   if (RUNTIME_VERSION !== EXTENSION_VERSION) throw new Error("套件與面板版本不一致，請重新載入擴充功能。");
@@ -236,7 +236,7 @@
     $("requestProbeTools").hidden = blocking && !blockJob?.requestProbeEnabled && !blockJob?.directRequestTest;
     $("probeStatus").textContent = blockJob?.directRequest
       ? blockJob.directRequest.verifiedAfterReload ? '此帳號直接提交及重新載入核對已通過。請匯出完整診斷 JSON，尚未啟用快速批次。' : '直接請求尚未通過完整核對。請匯出完整診斷 JSON；不會自動重試。'
-      : blockJob?.directRequestTest ? '單一帳號直接請求驗證中。' : blockJob?.requestProbe
+      : blockJob?.directRequestTest ? blockJob.status === 'running' ? '單一帳號直接請求驗證中。' : '尚未確認直接提交，請匯出完整診斷 JSON 查看檢查結果。' : blockJob?.requestProbe
       ? `已記錄 ${blockJob.requestProbe.records?.length || 0} 筆候選請求。請匯出完整診斷 JSON；尚未確認直接請求可用或作用範圍。`
       : blockJob?.requestProbeEnabled ? '請求驗證中；仍使用網頁操作。' : '';
     $("blockPause").disabled = blockJob?.status !== "running" || blockRequest;

@@ -115,21 +115,23 @@ async function run() {
         assert.equal(await cdp.eval('document.visibilityState'),'visible');assert.equal(await cdp.eval('visibilityFrameRan'),true);
       } finally {await cdp.call('Target.closeTarget',{targetId:other});}
     });
-    await check('native Chrome XHR is held before send and one direct fetch receives the exact request',async()=>{
+    for (const format of ['urlencoded','formdata']) await check(`native Chrome XHR holds ${format} and one direct fetch receives unchanged fields`,async()=>{
       const core=await fs.readFile(path.join(root,'extension/request-probe-core.js'),'utf8');
       const bridge=await fs.readFile(path.join(root,'extension/direct-request.js'),'utf8');
       await cdp.eval(core);
       const result=await cdp.eval(`(async()=>{
         const nativeSend=XMLHttpRequest.prototype.send, calls=[];
-        const fakeRoot={ThreadsRequestProbeCore,XMLHttpRequest,URL,URLSearchParams,Headers,AbortController,setTimeout:setTimeout.bind(window),clearTimeout:clearTimeout.bind(window),document,
+        const fakeRoot={ThreadsRequestProbeCore,XMLHttpRequest,URL,URLSearchParams,FormData,Headers,AbortController,setTimeout:setTimeout.bind(window),clearTimeout:clearTimeout.bind(window),document,
           location:{href:'https://www.threads.com/@fixture'},fetch:async(url,init)=>{calls.push({url,body:init.body,credentialMode:init.credentials});return new Response(JSON.stringify({data:{block:{status:'ok'}}}),{status:200});}};
         new Function('globalThis',${JSON.stringify(bridge)})(fakeRoot);
         const api=fakeRoot.ThreadsDirectRequest;api.arm({username:'fixture'});
-        const body=new URLSearchParams({fb_api_req_friendly_name:'useTHUserBlockMutation',doc_id:'12345',fb_dtsg:'synthetic-secret',variables:JSON.stringify({user_id:'123456',container_module:'fixture_profile',media_id:null,barcelona_source_quote_post_id:null,barcelona_source_reply_id:null,is_messaging_nua:null,consistent_thread_fbid:null})}).toString();
-        const xhr=new XMLHttpRequest();xhr.open('POST','https://www.threads.com/api/graphql');xhr.setRequestHeader('Content-Type','application/x-www-form-urlencoded');xhr.send(body);
+        const encoded=new URLSearchParams({fb_api_req_friendly_name:'useTHUserBlockMutation',doc_id:'12345',fb_dtsg:'synthetic-secret',variables:JSON.stringify({user_id:'123456',container_module:'fixture_profile',media_id:null,barcelona_source_quote_post_id:null,barcelona_source_reply_id:null,is_messaging_nua:null,consistent_thread_fbid:null})});
+        const body=${JSON.stringify(format)}==='formdata'?new FormData():encoded.toString();if(body instanceof FormData)for(const [key,value]of encoded)body.append(key,value);
+        const xhr=new XMLHttpRequest();xhr.open('POST','https://www.threads.com/api/graphql');if(typeof body==='string')xhr.setRequestHeader('Content-Type','application/x-www-form-urlencoded');xhr.send(body);
         const before={ready:api.status().captured,calls:calls.length,xhrState:xhr.readyState};
         const submitted=await api.submit(),second=await api.submit();api.dispose();
-        return {before,submitted,second,exact:calls.length===1&&calls[0].body===body,restored:XMLHttpRequest.prototype.send===nativeSend};
+        const fields=calls[0]?.body instanceof FormData?new URLSearchParams(calls[0].body).toString():calls[0]?.body;
+        return {before,submitted,second,exact:calls.length===1&&fields===encoded.toString(),restored:XMLHttpRequest.prototype.send===nativeSend};
       })()`);
       assert.equal(result.before.ready,true);assert.equal(result.before.calls,0);assert.equal(result.before.xhrState,1);
       assert.equal(result.submitted.accepted,true);assert.equal(result.second.attempted,false);assert.equal(result.exact,true);assert.equal(result.restored,true);

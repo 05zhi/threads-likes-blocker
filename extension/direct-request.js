@@ -3,7 +3,7 @@
  * Raw request material lives only in this closure and is never returned. */
 (function (root) {
   'use strict';
-  if (root.ThreadsDirectRequest?.version === 1) return;
+  if (root.ThreadsDirectRequest?.version === 2) return;
   let state = null;
   const Core = root.ThreadsRequestProbeCore;
   function arm({ username }) {
@@ -13,23 +13,39 @@
     const originalFetch = root.fetch, proto = root.XMLHttpRequest.prototype;
     const open = proto.open, send = proto.send, setHeader = proto.setRequestHeader;
     const metadata = new WeakMap();
-    const s = state = { href: page.href, closed: false, attempted: false, candidate: null, count: 0, refused: false, held: [], records: [] };
+    const s = state = { href: page.href, closed: false, attempted: false, candidate: null, count: 0, refused: false, held: [], records: [], checks: {}, bodyFormat: 'unknown', candidates: [] };
     const bound = () => root.location.href === s.href && root.document.visibilityState === 'visible';
-    function capture(url, method, body, headers) {
-      const description = Core.describeRequest({ url, base: s.href, method, body, operationHeader: headers.get('x-fb-friendly-name') });
+    function capture(url, method, body, headers, transport) {
+      let format = 'unsupported', data = null, snapshot = body, validBody = false;
+      if (typeof body === 'string' && body.length <= 1048576) { format = 'urlencoded'; data = new root.URLSearchParams(body); validBody = true; }
+      else if (body instanceof root.URLSearchParams) { format = 'urlsearchparams'; data = new root.URLSearchParams(body); snapshot = new root.URLSearchParams(body); validBody = true; }
+      else if (root.FormData && body instanceof root.FormData) {
+        format = 'formdata'; data = new root.URLSearchParams(); snapshot = new root.FormData(); validBody = true; let size = 0;
+        for (const [key, value] of body.entries()) {
+          if (typeof value !== 'string') { validBody = false; continue; }
+          size += key.length + value.length; if (size > 1048576) { validBody = false; break; }
+          data.append(key, value); snapshot.append(key, value);
+        }
+      }
+      const description = Core.describeRequest({ url, base: s.href, method, body: data ? Object.fromEntries(data) : body, operationHeader: headers.get('x-fb-friendly-name') });
       if (description?.action !== 'block') return false;
       s.count++;
-      const data = typeof body === 'string' ? new URLSearchParams(body) : null;
+      s.bodyFormat = format;
+      if (s.candidates.length < 8) s.candidates.push({ transport, request: description, response: { status: null, json: false, fields: [] } });
       const variables = data && Core.parseJSON(data.get('variables'));
       const actualURL = new URL(url, s.href);
       const keys = ['user_id', 'container_module', 'media_id', 'barcelona_source_quote_post_id', 'barcelona_source_reply_id', 'is_messaging_nua', 'consistent_thread_fbid'];
-      const eligible = !s.closed && bound() && s.count === 1 && description.operation === 'useTHUserBlockMutation' && description.documentId &&
-        actualURL.origin === page.origin && /^\/api\/graphql\/?$/.test(actualURL.pathname) && !actualURL.search && !actualURL.hash &&
-        variables && Object.keys(variables).length === keys.length && keys.every(key => Object.hasOwn(variables, key)) &&
-        /^\d{1,30}$/.test(variables.user_id) && typeof variables.container_module === 'string' && variables.container_module.length <= 120 &&
-        keys.slice(2).every(key => variables[key] === null);
+      s.checks = { active: !s.closed, profileBinding: bound(), singleCandidate: s.count === 1,
+        operation: description.operation === 'useTHUserBlockMutation', documentId: !!description.documentId,
+        endpoint: actualURL.origin === page.origin && /^\/api\/graphql\/?$/.test(actualURL.pathname) && !actualURL.hash,
+        bodyEncoding: validBody, uniqueBodyKeys: !!data && new Set(data.keys()).size === [...data.keys()].length,
+        variableSchema: !!variables && Object.keys(variables).length === keys.length && keys.every(key => Object.hasOwn(variables, key)),
+        targetId: !!variables && /^\d{1,30}$/.test(variables.user_id),
+        container: !!variables && typeof variables.container_module === 'string' && variables.container_module.length <= 120,
+        optionalContext: !!variables && keys.slice(2).every(key => variables[key] === null) };
+      const eligible = Object.values(s.checks).every(value => value === true);
       if (!eligible) { s.refused = true; s.candidate = null; }
-      else s.candidate = { url: actualURL.href, body, headers: new root.Headers(headers), description };
+      else s.candidate = { url: actualURL.href, body: snapshot, headers: new root.Headers(headers), description };
       // Suppress even a malformed/duplicate block candidate; never pass through
       // and then replay an operation that may already have reached the server.
       return true;
@@ -38,18 +54,17 @@
     function wrappedHeader(name, value) { metadata.get(this)?.headers.append(name, value); return setHeader.call(this, name, value); }
     function wrappedSend(body) {
       const m = metadata.get(this);
-      const text = body instanceof root.URLSearchParams ? body.toString() : body;
-      if (m && capture(m.url, m.method, text, m.headers)) return undefined;
+      if (m && capture(m.url, m.method, body, m.headers, 'xhr')) return undefined;
       return send.call(this, body);
     }
     function wrappedFetch(input, init) {
       // The observed live transport is XHR. Never claim capture of an unread
       // Request stream; an unsupported transport yields no direct submission.
       const method = init?.method || input?.method || 'GET';
-      const body = init?.body instanceof root.URLSearchParams ? init.body.toString() : init?.body;
+      const body = init?.body;
       const headers = new root.Headers(init?.headers || input?.headers);
       const url = typeof input === 'string' || input instanceof URL ? String(input) : input?.url;
-      if (capture(url, method, body, headers)) {
+      if (capture(url, method, body, headers, 'fetch')) {
         const promise = new Promise((resolve, reject) => s.held.push({ resolve, reject }));
         promise.catch(() => {}); return promise;
       }
@@ -67,7 +82,8 @@
     s.timer = root.setTimeout(dispose, 90000);
     return { active: true };
   }
-  function status() { return { captured: !!state?.candidate && !state.closed && !state.refused, refused: state?.refused === true, attempted: state?.attempted === true }; }
+  function status() { return { captured: !!state?.candidate && !state.closed && !state.refused, refused: state?.refused === true, attempted: state?.attempted === true,
+    diagnostics: { bodyFormat: state?.bodyFormat || 'unknown', candidateCount: state?.count || 0, checks: state?.checks || {}, report: Core.cleanReport({ records: state?.candidates || [] }) } }; }
   async function submit() {
     const s = state;
     if (!s || s.closed || s.attempted || s.refused || !s.candidate || !s.bound()) return { attempted: false, report: Core.cleanReport(null) };
@@ -94,5 +110,5 @@
     previous.closed = true; previous.candidate = null; previous.restore?.(); root.clearTimeout(previous.timer);
     for (const pending of previous.held.splice(0)) pending.reject(new Error('Direct request test ended'));
   }
-  root.ThreadsDirectRequest = Object.freeze({ version: 1, arm, status, submit, dispose });
+  root.ThreadsDirectRequest = Object.freeze({ version: 2, arm, status, submit, dispose });
 })(globalThis);

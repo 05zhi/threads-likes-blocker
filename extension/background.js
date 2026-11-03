@@ -1,7 +1,7 @@
 /* Only an explicit panel command starts a blocking job. */
 importScripts("core.js", "job.js", "request-probe-core.js");
 const Core = globalThis.ThreadsProbeCore, Jobs = globalThis.ThreadsBlockJob;
-const BUILD_VERSION = "0.4.7";
+const BUILD_VERSION = "0.4.8";
 const JOB_KEY = "threadsBlocker.job.v1";
 let job = null, runner = null, serial = Promise.resolve(), workerOwnership = null;
 const openingTabs = new Set();
@@ -91,6 +91,15 @@ async function directCall(tabId, method, args) {
   const response = await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: (method, args) => globalThis.ThreadsDirectRequest?.[method](args), args: [method, args ?? null] });
   return response.length === 1 ? response[0].result : null;
 }
+function cleanDirectCapture(value) {
+  const checks = {};
+  for (const key of ['active', 'profileBinding', 'singleCandidate', 'operation', 'documentId', 'endpoint', 'bodyEncoding', 'uniqueBodyKeys', 'variableSchema', 'targetId', 'container', 'optionalContext']) {
+    if (typeof value?.checks?.[key] === 'boolean') checks[key] = value.checks[key];
+  }
+  return { bodyFormat: ['urlencoded', 'urlsearchparams', 'formdata', 'unsupported'].includes(value?.bodyFormat) ? value.bodyFormat : 'unknown',
+    candidateCount: Number.isInteger(value?.candidateCount) ? Math.min(100, Math.max(0, value.candidateCount)) : 0,
+    checks, report: globalThis.ThreadsRequestProbeCore.cleanReport(value?.report) };
+}
 async function verifyDirectRequest(tabId, taskId, username, actorUsername, confirmationToken) {
   let captured = false, attempted = false, triggered = false;
   const deferred = () => ({ status: 'deferred', reason: '直接請求送出前已暫停，尚未封鎖。', evidence: { finalActionAttempted: false } });
@@ -106,7 +115,14 @@ async function verifyDirectRequest(tabId, taskId, username, actorUsername, confi
     const deadline = Date.now() + 6000;
     while (Date.now() < deadline) {
       const status = await directCall(tabId, 'status');
-      if (status?.refused) return { status: 'needs-attention', reason: '請求不符合已觀察格式或有多筆候選；未直接送出。' };
+      if (status?.refused || status?.captured) {
+        const diagnostics = cleanDirectCapture(status.diagnostics);
+        await mutate(async () => { if (job?.id === taskId) { job.directCapture = diagnostics; await save(); } });
+      }
+      if (status?.refused) {
+        const failed = Object.entries(cleanDirectCapture(status.diagnostics).checks).filter(([, value]) => !value).map(([key]) => key);
+        return { status: 'needs-attention', reason: `請求檢查未通過：${failed.join('、') || 'unknown'}；未直接送出。` };
+      }
       if (status?.captured) { captured = true; break; }
       await wait(100);
     }

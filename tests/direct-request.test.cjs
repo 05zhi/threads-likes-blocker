@@ -12,12 +12,12 @@ function fixture(options = {}) {
   const calls = [], timers = [];
   const fetch = async (...args) => { calls.push(args); if (options.reject) throw new Error('offline'); return new Response(JSON.stringify(options.response || { data: { block: { status: 'ok' } } }), { status: options.status || 200 }); };
   class XHR { open(...args) { this.openArgs = args; } setRequestHeader(...args) { (this.headers ||= []).push(args); } send(value) { this.sent = value; return 'original'; } }
-  const context = vm.createContext({ ThreadsRequestProbeCore: Core, URL, URLSearchParams, Headers, AbortController, fetch, XMLHttpRequest: XHR,
+  const context = vm.createContext({ ThreadsRequestProbeCore: Core, URL, URLSearchParams, FormData, Headers, AbortController, fetch, XMLHttpRequest: XHR,
     location: { href: 'https://www.threads.com/@victim' }, document: { visibilityState: 'visible' },
     setTimeout(fn, ms) { const t = { fn, ms }; timers.push(t); return t; }, clearTimeout(t) { if (t) t.cleared = true; } });
   vm.runInContext(code, context);
   const api = context.ThreadsDirectRequest;
-  function request(payload = body(), endpoint = url) { const xhr = new XHR(); xhr.open('POST', endpoint, true); xhr.setRequestHeader('content-type', 'application/x-www-form-urlencoded'); xhr.setRequestHeader('x-fb-lsd', 'PRIVATE_HEADER'); xhr.send(payload); return xhr; }
+  function request(payload = body(), endpoint = url) { const xhr = new XHR(); xhr.open('POST', endpoint, true); if (!(payload instanceof FormData)) xhr.setRequestHeader('content-type', 'application/x-www-form-urlencoded'); xhr.setRequestHeader('x-fb-lsd', 'PRIVATE_HEADER'); xhr.send(payload); return xhr; }
   return { api, context, calls, timers, XHR, fetch, request };
 }
 test('holds the website XHR and submits the exact body once without exporting credentials', async () => {
@@ -30,9 +30,35 @@ test('holds the website XHR and submits the exact body once without exporting cr
   assert.equal((await f.api.submit()).attempted, false); assert.equal(f.calls.length, 1); f.api.dispose();
 });
 test('unsupported schema, operation and endpoint are never directly submitted', async () => {
-  for (const [payload, endpoint] of [[body({ variables: JSON.stringify({ ...variables, block_on_instagram: true }) }), url], [body({ fb_api_req_friendly_name: 'OtherBlockMutation' }), url], [body(), url + '?other=1'], [body(), 'https://i.instagram.com/api/graphql']]) {
+  for (const [payload, endpoint] of [[body({ variables: JSON.stringify({ ...variables, block_on_instagram: true }) }), url], [body({ fb_api_req_friendly_name: 'OtherBlockMutation' }), url], [body(), 'https://i.instagram.com/api/graphql']]) {
     const f = fixture(); f.api.arm({ username: 'victim' }); const xhr = f.request(payload, endpoint);
     assert.equal(xhr.sent, undefined); assert.equal(f.api.status().refused, true); assert.equal((await f.api.submit()).attempted, false); assert.equal(f.calls.length, 0); f.api.dispose();
+  }
+});
+
+test('FormData is captured and snapshotted without converting its transport or exporting credentials', async () => {
+  const f = fixture(), form = new FormData(); for (const [key,value] of new URLSearchParams(body())) form.append(key,value);
+  f.api.arm({username:'victim'}); const xhr=f.request(form);
+  assert.equal(xhr.sent,undefined); const status=f.api.status(); assert.equal(status.captured,true); assert.equal(status.diagnostics.bodyFormat,'formdata');
+  assert.equal(Object.values(status.diagnostics.checks).every(Boolean),true); assert.equal(JSON.stringify(status).includes('PRIVATE'),false);
+  form.set('variables','CHANGED_AFTER_CAPTURE'); const result=await f.api.submit(); assert.equal(result.accepted,true);
+  const sent=f.calls[0][1]; assert.ok(sent.body instanceof FormData); assert.equal(sent.body.get('variables'),JSON.stringify(variables)); assert.equal(sent.headers.has('content-type'),false);
+  f.api.dispose();
+});
+test('URLSearchParams stays snapshotted and same-endpoint query parameters are preserved only in the request', async () => {
+  const f=fixture(), payload=new URLSearchParams(body()), endpoint=url+'?route=PRIVATE_QUERY'; f.api.arm({username:'victim'}); f.request(payload,endpoint);
+  payload.set('variables','CHANGED_AFTER_CAPTURE'); assert.equal(f.api.status().captured,true);
+  assert.equal(JSON.stringify(f.api.status()).includes('PRIVATE'),false);
+  await f.api.submit(); assert.equal(f.calls[0][0],endpoint); assert.ok(f.calls[0][1].body instanceof URLSearchParams);
+  assert.equal(f.calls[0][1].body.get('variables'),JSON.stringify(variables)); f.api.dispose();
+});
+test('binary form fields and duplicate body keys are refused with precise non-secret diagnostics', async () => {
+  for(const binary of [true,false]) {
+    const f=fixture(), form=new FormData(); for(const [key,value] of new URLSearchParams(body())) form.append(key,value);
+    if(binary)form.append('attachment',new Blob(['PRIVATE_FILE']),'PRIVATE_NAME');else form.append('doc_id','98765');
+    f.api.arm({username:'victim'}); f.request(form); const status=f.api.status(); assert.equal(status.refused,true);
+    assert.equal(status.diagnostics.checks[binary?'bodyEncoding':'uniqueBodyKeys'],false); assert.equal(JSON.stringify(status).includes('PRIVATE'),false);
+    assert.equal((await f.api.submit()).attempted,false); assert.equal(f.calls.length,0); f.api.dispose();
   }
 });
 test('multiple candidate requests are suppressed and invalidate direct submission', async () => {
