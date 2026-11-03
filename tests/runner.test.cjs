@@ -5,12 +5,14 @@ const fs=require('node:fs');
 const path=require('node:path');
 const vm=require('node:vm');
 const Jobs=require('../extension/job.js');
+const Probe=require('../extension/request-probe-core.js');
+const directReport=(id='123456')=>({records:[{transport:'fetch',request:Probe.describeRequest({url:'https://www.threads.com/api/graphql',method:'POST',body:JSON.stringify({fb_api_req_friendly_name:'useTHUserBlockMutation',doc_id:'12345',variables:{user_id:id}})}),response:{status:200,json:true,fields:Probe.fields({data:{record:{user:{id,friendship_status:{blocking:true}}}}})}}]});
 const dir=path.join(__dirname,'../extension');
 const source=fs.readFileSync(path.join(dir,'background.js'),'utf8');
 const JOB_KEY='threadsBlocker.job.v1';
 const target={url:'https://www.threads.com/@author/post/TEST',kind:'post'};
 const account=username=>({username,profileUrl:`https://www.threads.com/@${username}`});
-const panelIdentity={panelVersion:'0.4.9',extensionId:'fixture-extension'};
+const panelIdentity={panelVersion:'0.5.0',extensionId:'fixture-extension'};
 const initial=()=>({...panelIdentity,type:'BLOCK_START',confirmed:true,target,accounts:[account('alice'),account('bob')],actorUsername:'me',includeAuthor:false});
 const sender={tab:{id:7,url:target.url},url:target.url};
 const clone=value=>value===undefined?undefined:JSON.parse(JSON.stringify(value));
@@ -22,10 +24,10 @@ function harness(options={}) {
   const calls=[],tabs=new Map([[7,{id:7,url:target.url,status:'complete'}]]),store=options.saved?{[JOB_KEY]:clone(options.saved)}:{};
   for(const tab of options.tabs||[])tabs.set(tab.id,clone(tab));
   const listeners={};let workerId=100,freshChecks=0;
-  const context=vm.createContext({URL,crypto:require('node:crypto').webcrypto,setTimeout:fn=>setImmediate(fn),clearTimeout:clearImmediate,console,
+  const context=vm.createContext({URL,crypto:require('node:crypto').webcrypto,setTimeout:(fn,ms)=>{calls.push({kind:'wait',ms});return setImmediate(fn);},clearTimeout:clearImmediate,console,
     chrome:{
       storage:{local:{async get(key){return{[key]:clone(store[key])};},async set(value){Object.assign(store,clone(value));calls.push({kind:'save',job:clone(value[JOB_KEY])});}}},
-      runtime:{id:'fixture-extension',getManifest(){return{version:options.runtimeVersion===undefined?'0.4.9':options.runtimeVersion}},onMessage:{addListener(fn){listeners.message=fn;}}},
+      runtime:{id:'fixture-extension',getManifest(){return{version:options.runtimeVersion===undefined?'0.5.0':options.runtimeVersion}},onMessage:{addListener(fn){listeners.message=fn;}}},
       action:{onClicked:{addListener(fn){listeners.action=fn;}},async setBadgeText(){},async setTitle(){}},
       tabs:{
         onRemoved:{addListener(fn){listeners.removed=fn;}},onUpdated:{addListener(fn){listeners.updated=fn;}},onActivated:{addListener(fn){listeners.activated=fn;}},
@@ -41,7 +43,8 @@ function harness(options={}) {
           if(String(value.func).includes('ThreadsDirectRequest')) {
             const method=value.args[0];calls.push({kind:'direct-'+method});
             if(options.direct)return[{result:await options.direct(method,calls)}];
-            return[{result:method==='arm'?{active:true}:method==='status'?{captured:true}:method==='submit'?{attempted:true,accepted:true,report:{records:[]}}:null}];
+            const id=tabs.get(value.target.tabId).url.endsWith('/@bob')?'234567':tabs.get(value.target.tabId).url.endsWith('/@author')?'345678':'123456';
+            return[{result:method==='arm'?{active:true}:method==='status'?{captured:true,diagnostics:{report:directReport(id)}}:method==='submit'?{attempted:true,accepted:true,report:directReport(id)}:null}];
           }
           if(String(value.func).includes('.begin()')){calls.push({kind:'probe-begin'});if(options.failProbe)throw new Error('probe failed');return[{result:{active:true}}];}
           calls.push({kind:'probe-finish'});return[{result:{records:[],directRequestVerified:true,secret:'MUST_NOT_PERSIST'}}];
@@ -75,7 +78,7 @@ function harness(options={}) {
 test('GET exposes background build, runtime and extension identity without requiring a current panel',async()=>{
   const h=harness();await h.ready;
   const response=await h.message({type:'BLOCK_GET'});
-  assert.equal(response.ok,true);assert.equal(response.job,null);assert.equal(response.buildVersion,'0.4.9');assert.equal(response.runtimeVersion,'0.4.9');assert.equal(response.extensionId,'fixture-extension');
+  assert.equal(response.ok,true);assert.equal(response.job,null);assert.equal(response.buildVersion,'0.5.0');assert.equal(response.runtimeVersion,'0.5.0');assert.equal(response.extensionId,'fixture-extension');
   assert.equal(h.calls.some(c=>['create','navigate','inject','adapter','save'].includes(c.kind)),false);
 });
 
@@ -96,9 +99,9 @@ test('legacy, stale and wrong-extension panels cannot start or resume blocking',
 test('mixed background and runtime builds refuse dispatch while legacy pause, stop and GET stay available',async()=>{
   const saved=Jobs.pause(Jobs.createJob({...initial(),sourceTabId:7},'2026-11-03T00:00:00.000Z'),'2026-11-03T00:00:01.000Z');
   const h=harness({runtimeVersion:'0.3.0',saved});await h.ready;h.calls.length=0;
-  const report=await h.message({type:'BLOCK_GET'});assert.equal(report.buildVersion,'0.4.9');assert.equal(report.runtimeVersion,'0.3.0');
+  const report=await h.message({type:'BLOCK_GET'});assert.equal(report.buildVersion,'0.5.0');assert.equal(report.runtimeVersion,'0.3.0');
   for(const type of ['BLOCK_START','BLOCK_RESUME']){
-    const response=await h.message({...initial(),type});assert.equal(response.ok,false);assert.match(response.error,/背景程式版本 0\.4\.9 與套件版本 0\.3\.0/);
+    const response=await h.message({...initial(),type});assert.equal(response.ok,false);assert.match(response.error,/背景程式版本 0\.5\.0 與套件版本 0\.3\.0/);
   }
   assert.equal(h.calls.some(c=>['create','navigate','inject','adapter','save'].includes(c.kind)),false);
   assert.equal((await h.message({type:'BLOCK_PAUSE'})).ok,true);assert.equal((await h.message({type:'BLOCK_STOP'})).ok,true);assert.equal(h.job().status,'stopped');
@@ -183,7 +186,7 @@ test('runner prepares before confirming and processes a selected account once',a
   await until(()=>h.job()?.status==='completed','completion');
   assert.deepEqual(h.phases(),['prepare','confirm']);assert.equal(h.job().items[0].status,'success');assert.equal(h.job().items[0].attempts,1);
   assert.equal(h.calls.find(c=>c.kind==='adapter'&&c.phase==='confirm').confirmationToken,'mock-token');
-  for(const key of ['extensionVersion','buildVersion','runtimeVersion','clientPanelVersion'])assert.equal(h.job()[key],'0.4.9');assert.equal(h.job().extensionId,'fixture-extension');
+  for(const key of ['extensionVersion','buildVersion','runtimeVersion','clientPanelVersion'])assert.equal(h.job()[key],'0.5.0');assert.equal(h.job().extensionId,'fixture-extension');
   await until(()=>h.calls.some(c=>c.kind==='remove'),'worker cleanup');assert.equal(h.job().workerTabId,null);
 });
 test('only one job can run or remain paused at a time',async()=>{
@@ -355,6 +358,61 @@ test('normal jobs do not install request observers',async()=>{
 });
 
 const directStart=()=>({...initial(),accounts:[account('alice')],directRequestTest:true});
+test('direct batch processes reviewed likers and author with exact response IDs and only one initial reload',async()=>{
+  const h=harness();await h.ready;await h.message({...initial(),accounts:[account('alice'),account('bob'),account('me')],includeAuthor:true,directBatch:true});
+  await until(()=>h.job().status==='completed','batch completion');
+  assert.equal(h.job().executionMode,'direct-batch');assert.deepEqual(h.job().items.map(a=>a.username),['alice','bob','author']);
+  assert.ok(h.job().items.every(a=>a.status==='success'&&a.evidence.server.confirmed));assert.equal(h.calls.filter(c=>c.kind==='direct-submit').length,3);
+  assert.equal(h.calls.filter(c=>c.kind==='reload').length,1);assert.deepEqual(h.job().items.map(a=>a.evidence.verifiedAfterReload),[true,false,false]);
+  assert.deepEqual(h.job().items.map(a=>a.evidence.server.responseUserId),['123456','234567','345678']);
+  assert.ok(h.calls.some(c=>c.kind==='wait'&&c.ms===1000));
+});
+test('batch mode cannot bypass confirmation or mix with single-account experiments',async()=>{
+  for(const changes of [{confirmed:false},{directRequestTest:true},{probeRequest:true},{directBatch:'yes'}]) {
+    const h=harness();await h.ready;assert.equal((await h.message({...initial(),directBatch:true,...changes})).ok,false);assert.equal(h.job(),null);
+  }
+});
+test('a failed first reload stops the batch before preparing the second account',async()=>{
+  const h=harness({adapter:async args=>[{result:args.phase==='prepare'?{status:'prepared',confirmationToken:'t'}:args.phase==='capture'?{status:'capture-triggered'}:{status:'unknown'}}]});
+  await h.ready;await h.message({...initial(),directBatch:true});await until(()=>h.job().status==='paused'&&h.job().current===null,'failed first verification');
+  assert.equal(h.job().items[0].status,'unknown');assert.equal(h.job().items[1].status,'pending');assert.equal(h.job().directBatchValidated,false);
+  assert.equal(h.calls.filter(c=>c.kind==='direct-submit').length,1);
+});
+test('later batch HTTP failures or mismatched IDs stop remaining accounts without retry',async()=>{
+  for(const failure of ['wrong-id','rate-limit']) {
+    let count=0;
+    const h=harness({direct:method=>{
+      if(method==='arm')return{active:true};if(method==='status')return{captured:true,diagnostics:{report:directReport()}};
+      if(method==='submit') { count++;const report=directReport();if(count===2) {if(failure==='wrong-id')report.records[0].response.fields=Probe.fields({data:{record:{user:{id:'999999',friendship_status:{blocking:true}}}}});else report.records[0].response.status=429;}return{attempted:true,accepted:true,report}; }
+      return null;
+    }});
+    await h.ready;await h.message({...initial(),accounts:[account('alice'),account('bob'),account('charlie')],directBatch:true});
+    await until(()=>h.job().status==='paused'&&h.job().current===null,'batch response failure');
+    assert.deepEqual(h.job().items.map(a=>a.status),['success','unknown','pending']);assert.equal(count,2);
+  }
+});
+test('pausing the next held batch request sends nothing and resume repeats the reload check',async()=>{
+  let captured=0;const held=gate();
+  const h=harness({direct:method=>method==='arm'?{active:true}:method==='status'?(++captured===2?held.promise:{captured:true,diagnostics:{report:directReport()}}):method==='submit'?{attempted:true,accepted:true,report:directReport()}:null});
+  await h.ready;await h.message({...initial(),directBatch:true});await until(()=>captured===2,'second capture');await h.message({type:'BLOCK_PAUSE'});
+  held.resolve({captured:true,diagnostics:{report:directReport()}});await until(()=>h.job().current===null,'paused held request');
+  assert.deepEqual(h.job().items.map(a=>a.status),['success','pending']);assert.equal(h.calls.filter(c=>c.kind==='direct-submit').length,1);
+  await h.message({...panelIdentity,type:'BLOCK_RESUME',jobId:h.job().id,actorUsername:'me'});await until(()=>h.job().status==='completed','resumed batch');
+  assert.equal(h.calls.filter(c=>c.kind==='direct-submit').length,2);assert.equal(h.job().items[1].evidence.verifiedAfterReload,true);
+});
+test('stopping a held batch request cancels remaining accounts without another submission',async()=>{
+  let captured=0;const held=gate();
+  const h=harness({direct:method=>method==='arm'?{active:true}:method==='status'?(++captured===2?held.promise:{captured:true,diagnostics:{report:directReport()}}):method==='submit'?{attempted:true,accepted:true,report:directReport()}:null});
+  await h.ready;await h.message({...initial(),accounts:[account('alice'),account('bob'),account('charlie')],directBatch:true});await until(()=>captured===2,'second held request');await h.message({type:'BLOCK_STOP'});
+  held.resolve({captured:true,diagnostics:{report:directReport()}});await until(()=>h.job().current===null,'stopped batch');
+  assert.deepEqual(h.job().items.map(a=>a.status),['success','skipped','cancelled']);assert.equal(h.calls.filter(c=>c.kind==='direct-submit').length,1);
+});
+test('a recovered batch never trusts a previous browser session reload validation',async()=>{
+  const saved={...Jobs.createJob({...initial(),sourceTabId:7},'2026-11-03T00:00:00.000Z'),directBatch:true,directBatchValidated:true};
+  const h=harness({saved});await h.ready;assert.equal(h.job().directBatchValidated,false);
+  await h.message({...panelIdentity,type:'BLOCK_RESUME',jobId:h.job().id,actorUsername:'me'});await until(()=>h.job().status==='completed','recovered batch');
+  assert.equal(h.calls.filter(c=>c.kind==='reload').length,1);assert.equal(h.job().items[0].evidence.verifiedAfterReload,true);
+});
 test('direct verification requires one confirmed target and excludes simultaneous observer mode',async()=>{
   for(const payload of [{...initial(),directRequestTest:true},{...directStart(),confirmed:false},{...directStart(),probeRequest:true},{...directStart(),directRequestTest:'yes'}]) {
     const h=harness();await h.ready;assert.equal((await h.message(payload)).ok,false);assert.equal(h.job(),null);assert.equal(h.calls.some(c=>c.kind==='create'),false);

@@ -84,7 +84,26 @@
     return { schemaVersion: 1, mode: 'observe-only', directRequestVerified: false, scopeVerified: false, credentialsOmitted: true,
       expired: report?.expired === true, records };
   }
-  const api = Object.freeze({ parseJSON, fields, describeRequest, cleanReport, isReportableKey });
+  function blockEvidence(report, capture) {
+    const sent = cleanReport(report).records, original = cleanReport(capture).records;
+    const read = (rows, path, property) => {
+      const matches = rows.filter(row => JSON.stringify(row.path) === JSON.stringify(path));
+      return matches.length === 1 ? matches[0][property] : undefined;
+    };
+    const entry = sent.length === 1 ? sent[0] : null, prepared = original.length === 1 ? original[0] : null;
+    const requestUserId = entry && read(entry.request.variables, ['user_id'], 'numericId');
+    const responseUserId = entry && read(entry.response.fields, ['data','record','user','id'], 'numericId');
+    const serverBlocking = entry && read(entry.response.fields, ['data','record','user','friendship_status','blocking'], 'boolean');
+    const originalId = prepared && read(prepared.request.variables, ['user_id'], 'numericId');
+    const hasErrors = entry?.response.fields.some(row => row.path[0] === 'errors' && (row.path.length > 1 || !['array','null'].includes(row.type)));
+    const sameRequest = entry && prepared && ['origin','path','operation','documentId','action'].every(key => entry.request[key] === prepared.request[key]);
+    const confirmed = !!(sameRequest && entry.request.origin === 'https://www.threads.com' && /^\/api\/graphql\/?$/.test(entry.request.path) &&
+      entry.request.operation === 'useTHUserBlockMutation' && entry.request.action === 'block' && entry.request.documentId &&
+      requestUserId && requestUserId === originalId && requestUserId === responseUserId && serverBlocking === true &&
+      entry.response.status === 200 && entry.response.json && !hasErrors);
+    return { confirmed, httpStatus: entry?.response.status ?? null, requestUserId: requestUserId || null, responseUserId: responseUserId || null, serverBlocking: serverBlocking === true };
+  }
+  const api = Object.freeze({ parseJSON, fields, describeRequest, cleanReport, isReportableKey, blockEvidence });
   root.ThreadsRequestProbeCore = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

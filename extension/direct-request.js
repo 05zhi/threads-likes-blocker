@@ -3,7 +3,7 @@
  * Raw request material lives only in this closure and is never returned. */
 (function (root) {
   'use strict';
-  if (root.ThreadsDirectRequest?.version === 3) return;
+  if (root.ThreadsDirectRequest?.version === 4) return;
   let state = null;
   const Core = root.ThreadsRequestProbeCore;
   function arm({ username }) {
@@ -108,7 +108,7 @@
       const response = await s.fetch.call(root, candidate.url, { method: 'POST', body: candidate.body, headers: candidate.headers, credentials: 'same-origin', redirect: 'error', signal: controller.signal });
       const json = Core.parseJSON(await response.clone().text());
       record.response = { status: response.status, json: !!json, fields: json ? Core.fields(json) : [] };
-      accepted = response.status === 200 && !!json?.data && !json.errors;
+      accepted = Core.blockEvidence({ records: [record] }, { records: s.candidates }).confirmed;
       for (const pending of s.held.splice(0)) pending.resolve(response.clone());
     } catch { for (const pending of s.held.splice(0)) pending.reject(new Error('Direct request outcome unknown')); }
     finally { root.clearTimeout(timer); candidate.body = null; candidate.headers = null; }
@@ -120,5 +120,5 @@
     previous.closed = true; previous.candidate = null; previous.restore?.(); root.clearTimeout(previous.timer);
     for (const pending of previous.held.splice(0)) pending.reject(new Error('Direct request test ended'));
   }
-  root.ThreadsDirectRequest = Object.freeze({ version: 3, arm, status, submit, dispose });
+  root.ThreadsDirectRequest = Object.freeze({ version: 4, arm, status, submit, dispose });
 })(globalThis);

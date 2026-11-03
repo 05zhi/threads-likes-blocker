@@ -1,14 +1,14 @@
 /* Only an explicit panel command starts a blocking job. */
 importScripts("core.js", "job.js", "request-probe-core.js");
 const Core = globalThis.ThreadsProbeCore, Jobs = globalThis.ThreadsBlockJob;
-const BUILD_VERSION = "0.4.9";
+const BUILD_VERSION = "0.5.0";
 const JOB_KEY = "threadsBlocker.job.v1";
 let job = null, runner = null, serial = Promise.resolve(), workerOwnership = null;
 const openingTabs = new Set();
 const now = () => new Date().toISOString();
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 const ready = chrome.storage.local.get(JOB_KEY).then(async saved => {
-  if (saved[JOB_KEY]) { job = Jobs.recover(saved[JOB_KEY], now()); job.workerTabId = null; await save(); }
+  if (saved[JOB_KEY]) { job = Jobs.recover(saved[JOB_KEY], now()); job.workerTabId = null; if (job.directBatch) job.directBatchValidated = false; await save(); }
 });
 function safeOrigin(raw) {
   try { const u = new URL(raw); return u.protocol === "https:" && !u.username && !u.password && !u.port && ["threads.com", "www.threads.com", "threads.net", "www.threads.net"].includes(u.hostname); } catch { return false; }
@@ -102,11 +102,12 @@ function cleanDirectCapture(value) {
     additionalVariableFieldCount: Number.isInteger(value?.additionalVariableFieldCount) ? Math.min(10000, Math.max(0, value.additionalVariableFieldCount)) : 0,
     checks, report: globalThis.ThreadsRequestProbeCore.cleanReport(value?.report) };
 }
-async function verifyDirectRequest(tabId, taskId, username, actorUsername, confirmationToken) {
+async function verifyDirectRequest(tabId, taskId, username, actorUsername, confirmationToken, requireReload = true) {
   let captured = false, attempted = false, triggered = false;
   const deferred = () => ({ status: 'deferred', reason: '直接請求送出前已暫停，尚未封鎖。', evidence: { finalActionAttempted: false } });
   const authorized = () => job?.id === taskId && job.current === username && job.status === 'running';
   try {
+    await mutate(async () => { if (job?.id === taskId) { job.directCapture = null; job.directRequest = null; await save(); } });
     await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', files: ['request-probe-core.js', 'direct-request.js'] });
     if ((await directCall(tabId, 'arm', { username }))?.active !== true) throw new Error('直接請求驗證未啟動。');
     await assertSource(job);
@@ -135,18 +136,21 @@ async function verifyDirectRequest(tabId, taskId, username, actorUsername, confi
     attempted = true; // A lost bridge response after dispatch is also unknown.
     const sent = await directCall(tabId, 'submit');
     const report = globalThis.ThreadsRequestProbeCore.cleanReport(sent?.report);
-    await mutate(async () => { if (job?.id === taskId) { job.directRequest = { attempted: sent?.attempted !== false, responseAccepted: sent?.accepted === true, verifiedAfterReload: false, report }; await save(); } });
-    // Always re-read server-rendered state; an optimistic UI or HTTP 200 alone
-    // must not certify a direct block. No fallback or automatic replay.
+    const server = globalThis.ThreadsRequestProbeCore.blockEvidence(report, job?.directCapture?.report);
+    const confirmed = sent?.attempted === true && sent?.accepted === true && server.confirmed;
+    await mutate(async () => { if (job?.id === taskId) { job.directRequest = { attempted: sent?.attempted !== false, responseAccepted: sent?.accepted === true, serverConfirmed: confirmed, verifiedAfterReload: false, report }; await save(); } });
+    if (!requireReload) return { status: confirmed ? 'success' : 'unknown', reason: confirmed ? '伺服器已確認相同目標帳號為已封鎖。' : '伺服器回應未確認相同目標已封鎖；已暫停且不會重試。', evidence: { directRequest: true, verifiedAfterReload: false, server } };
+    // First direct block of a batch (and after every resume/restart) must also
+    // survive a new document. Later records require the exact confirmed ID.
     const documentToken = crypto.randomUUID();
     await chrome.scripting.executeScript({ target: { tabId }, func: token => { globalThis.__threadsDirectDocumentToken = token; }, args: [documentToken] });
     await chrome.tabs.reload(tabId, { bypassCache: true });
     if (!await waitForProfile(tabId, username, taskId, documentToken)) return { status: 'unknown', reason: '直接提交後已暫停，尚未核對重新載入的結果。' };
     await chrome.scripting.executeScript({ target: { tabId }, files: ['core.js', 'block-adapter.js'] });
     const verified = await adapter(tabId, { username, actorUsername, phase: 'verify' });
-    const success = sent?.attempted === true && sent?.accepted === true && verified.status === 'success';
-    await mutate(async () => { if (job?.id === taskId) { job.directRequest.verifiedAfterReload = success; await save(); } });
-    return { status: success ? 'success' : 'unknown', reason: success ? '直接請求已回應，且重新載入後確認已封鎖。' : '直接請求或重新載入核對未通過；不會重試。', evidence: { directRequest: true, verifiedAfterReload: success, diagnostics: verified.evidence?.diagnostics } };
+    const success = confirmed && verified.status === 'success';
+    await mutate(async () => { if (job?.id === taskId) { job.directRequest.verifiedAfterReload = success; if (success && job.directBatch) job.directBatchValidated = true; await save(); } });
+    return { status: success ? 'success' : 'unknown', reason: success ? '直接請求已回應，且重新載入後確認已封鎖。' : '直接請求或重新載入核對未通過；不會重試。', evidence: { directRequest: true, verifiedAfterReload: success, server, diagnostics: verified.evidence?.diagnostics } };
   } finally {
     try { await directCall(tabId, 'dispose'); } catch {}
     // Discard the website's optimistic state after a held-but-unsent request.
@@ -257,9 +261,9 @@ async function run() {
         await chrome.scripting.executeScript({ target: { tabId }, files: ["core.js", "block-adapter.js"] });
         if (job.requestProbeEnabled) { await beginRequestProbe(tabId); probeTabId = tabId; }
         result = await adapter(tabId, { username, actorUsername, phase: "prepare" });
-        if (result.status === 'prepared' && job.directRequestTest) {
+        if (result.status === 'prepared' && (job.directRequestTest || job.directBatch)) {
           submitted = true;
-          result = await verifyDirectRequest(tabId, taskId, username, actorUsername, result.confirmationToken);
+          result = await verifyDirectRequest(tabId, taskId, username, actorUsername, result.confirmationToken, !job.directBatch || !job.directBatchValidated);
         } else if (result.status === "prepared") {
           await assertSource(job);
           const maySubmit = await mutate(async () => {
@@ -293,7 +297,7 @@ async function run() {
       await mutate(async () => {
         if (job?.id === taskId && job.current === username) { job = Jobs.recordResult(job, username, result, now()); job.phase = null; await save(); }
       });
-      if (job.status === "running") await wait(3000);
+      if (job.status === "running") await wait(job.directBatch ? 1000 : 3000);
     }
   } catch (error) {
     await mutate(async () => { if (job?.id === taskId) { job = Jobs.recover(job, now()); job.reason = `工作中斷：${error.message}`; await save(); } });
@@ -320,9 +324,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (message.probeRequest === true && nextJob.items.length !== 1) throw new Error('請求驗證一次只處理一個已確認帳號。');
         if (message.directRequestTest !== undefined && typeof message.directRequestTest !== 'boolean') throw new Error('直接請求驗證選項無效。');
         if (message.directRequestTest === true && (nextJob.items.length !== 1 || message.probeRequest === true)) throw new Error('直接請求驗證只允許單一帳號，不能同時開啟觀察模式。');
+        if (message.directBatch !== undefined && typeof message.directBatch !== 'boolean') throw new Error('直接批次選項無效。');
+        if (message.directBatch === true && (message.directRequestTest === true || message.probeRequest === true)) throw new Error('批次工作不能同時啟用單人診斷模式。');
         job = nextJob;
         if (message.probeRequest === true) { job.requestProbeEnabled = true; job.executionMode = 'ui-request-probe'; }
         if (message.directRequestTest === true) { job.directRequestTest = true; job.executionMode = 'single-direct-verification'; }
+        if (message.directBatch === true) { job.directBatch = true; job.directBatchValidated = false; job.executionMode = 'direct-batch'; }
         job.sourcePage = sourcePage(sender.tab.url);
         job.extensionVersion = identity.runtimeVersion;
         job.buildVersion = identity.buildVersion; job.runtimeVersion = identity.runtimeVersion;
@@ -335,7 +342,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         else if (message.type === "BLOCK_RESUME") {
           if (typeof message.jobId !== "string" || message.jobId !== job.id) throw new Error("原封鎖工作已變更，請重新核對目前工作後再繼續。");
           if (!sameSource(sender.tab.url, job.sourcePage || job.target.url) || String(message.actorUsername || "").trim().replace(/^@/, "").toLowerCase() !== job.actorUsername.toLowerCase()) throw new Error("請回原來源頁面，並確認目前登入的仍是原帳號後繼續。");
-          job = Jobs.resume(job, now()); job.sourceTabId = sender.tab.id;
+          job = Jobs.resume(job, now()); job.sourceTabId = sender.tab.id; if (job.directBatch) job.directBatchValidated = false;
           job.buildVersion = identity.buildVersion; job.runtimeVersion = identity.runtimeVersion;
           job.extensionId = identity.extensionId; job.clientPanelVersion = message.panelVersion;
         } else throw new Error("無法辨識工作指令。");

@@ -10,7 +10,7 @@ const variables = { user_id: '123456', container_module: 'fixture_profile', medi
 const body = (changes = {}) => new URLSearchParams({ fb_api_req_friendly_name: 'useTHUserBlockMutation', doc_id: '12345', fb_dtsg: 'PRIVATE_TOKEN', variables: JSON.stringify(variables), ...changes }).toString();
 function fixture(options = {}) {
   const calls = [], timers = [];
-  const fetch = async (...args) => { calls.push(args); if (options.reject) throw new Error('offline'); return new Response(JSON.stringify(options.response || { data: { block: { status: 'ok' } } }), { status: options.status || 200 }); };
+  const fetch = async (...args) => { calls.push(args); if (options.reject) throw new Error('offline'); return new Response(JSON.stringify(options.response || { data: { record: { user: { id:'123456',friendship_status:{blocking:true} } } } }), { status: options.status || 200 }); };
   class XHR { open(...args) { this.openArgs = args; } setRequestHeader(...args) { (this.headers ||= []).push(args); } send(value) { this.sent = value; return 'original'; } }
   const context = vm.createContext({ ThreadsRequestProbeCore: Core, URL, URLSearchParams, FormData, Headers, AbortController, fetch, XMLHttpRequest: XHR,
     location: { href: 'https://www.threads.com/@victim' }, document: { visibilityState: 'visible' },
@@ -105,5 +105,15 @@ test('missing required fields and new visible scope fields still refuse submissi
   for(const value of [missing,{...variables,block_on_instagram:true}]) {
     const f=fixture();f.api.arm({username:'victim'});f.request(body({variables:JSON.stringify(value)}));
     assert.equal(f.api.status().refused,true);assert.equal((await f.api.submit()).attempted,false);assert.equal(f.calls.length,0);f.api.dispose();
+  }
+});
+test('HTTP 200 requires the captured user ID and explicit blocking true, without GraphQL errors', async () => {
+  for(const response of [
+    {data:{record:{user:{id:'999999',friendship_status:{blocking:true}}}}},
+    {data:{record:{user:{id:'123456',friendship_status:{blocking:false}}}}},
+    {data:{record:{user:{id:'123456',friendship_status:{blocking:true}}}},errors:[{message:'PRIVATE_ERROR'}]},
+    {data:{status:'ok'}}
+  ]) {
+    const f=fixture({response});f.api.arm({username:'victim'});f.request();assert.equal((await f.api.submit()).accepted,false);assert.equal(f.calls.length,1);f.api.dispose();
   }
 });

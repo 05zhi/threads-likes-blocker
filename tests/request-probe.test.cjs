@@ -92,3 +92,12 @@ test('finish waits for an outstanding XHR response instead of losing it after op
   await Promise.resolve(); assert.equal(done, false); xhr.listeners.loadend();
   const report = await finish; assert.equal(report.records[0].response.status, 200); assert.equal(report.records[0].response.json, true);
 });
+test('server evidence is bound to the captured request and rejects swapped or ambiguous reports', () => {
+  const request=Core.describeRequest({url:'https://www.threads.com/api/graphql',method:'POST',body:JSON.stringify({fb_api_req_friendly_name:'useTHUserBlockMutation',doc_id:'12345',variables:{user_id:'98765'}})});
+  const capture={records:[{transport:'xhr',request,response:{status:null,json:false,fields:[]}}]};
+  const good={records:[{transport:'fetch',request,response:{status:200,json:true,fields:Core.fields({data:{record:{user:{id:'98765',friendship_status:{blocking:true}}}}})}}]};
+  assert.equal(Core.blockEvidence(good,capture).confirmed,true);
+  for(const change of [r=>{r.records[0].request.documentId='54321';},r=>{r.records.push(r.records[0]);},r=>{r.records[0].response.fields.push({path:['data','record','user','id'],type:'string',numericId:'98765'});},r=>{r.records[0].request.variables[1].numericId='11111';}]) {
+    const changed=structuredClone(good);change(changed);assert.equal(Core.blockEvidence(changed,capture).confirmed,false);
+  }
+});

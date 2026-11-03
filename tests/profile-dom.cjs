@@ -122,7 +122,7 @@ async function run() {
       const result=await cdp.eval(`(async()=>{
         const nativeSend=XMLHttpRequest.prototype.send, calls=[];
         const fakeRoot={ThreadsRequestProbeCore,XMLHttpRequest,URL,URLSearchParams,FormData,Headers,AbortController,setTimeout:setTimeout.bind(window),clearTimeout:clearTimeout.bind(window),document,
-          location:{href:'https://www.threads.com/@fixture'},fetch:async(url,init)=>{calls.push({url,body:init.body,credentialMode:init.credentials});return new Response(JSON.stringify({data:{block:{status:'ok'}}}),{status:200});}};
+          location:{href:'https://www.threads.com/@fixture'},fetch:async(url,init)=>{calls.push({url,body:init.body,credentialMode:init.credentials});return new Response(JSON.stringify({data:{record:{user:{id:'123456',friendship_status:{blocking:true}}}}}),{status:200});}};
         new Function('globalThis',${JSON.stringify(bridge)})(fakeRoot);
         const api=fakeRoot.ThreadsDirectRequest;api.arm({username:'fixture'});
         const encoded=new URLSearchParams({fb_api_req_friendly_name:'useTHUserBlockMutation',doc_id:'12345',fb_dtsg:'synthetic-secret',variables:JSON.stringify({user_id:'123456',container_module:'fixture_profile',media_id:null,barcelona_source_quote_post_id:null,barcelona_source_reply_id:null,is_messaging_nua:null,consistent_thread_fbid:null,...(${JSON.stringify(format)}==='opaque-fields'?{session_id:'synthetic-secret-value'}:{})})});
