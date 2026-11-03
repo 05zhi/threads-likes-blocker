@@ -49,6 +49,15 @@ async function run() {
         await cdp.eval(`document.querySelector('#profile-header').insertAdjacentHTML('afterend','<div id="duplicate">'+document.querySelector('#profile-header').innerHTML+'</div>')`);
         assert.equal((await cdp.eval('fixtureAdapter.inspect(fixtureArgs)')).profileHeaderCandidateCount,2);assert.equal(await cdp.eval('fixtureAdapter.profileScope(fixtureArgs.username)'),null);await cdp.eval(`document.querySelector('#duplicate').remove()`);
       });
+      await check(`${name}: a sibling profile action row exposes Unblock without changing the compact scope`,async()=>{
+        await cdp.eval(`(()=>{const context=fixtureAdapter.profileScope(fixtureArgs.username);globalThis.originalCompactScope=context.scope;const header=document.createElement('div');header.id='account-header';context.scope.before(header);header.append(context.scope);const row=document.createElement('div');row.id='account-actions';const unblock=document.createElement('div');unblock.setAttribute('role','button');unblock.textContent='解除封鎖';row.append(unblock);header.append(row);})()`);
+        const result=await cdp.eval('fixtureAdapter.inspect(fixtureArgs)');assert.equal(result.hasUnblock,true);assert.equal(result.profileHeaderCandidateCount,1);assert.equal(await cdp.eval('fixtureAdapter.profileScope(fixtureArgs.username).scope===originalCompactScope'),true);assert.equal(await cdp.eval(`originalCompactScope.querySelectorAll('#account-actions').length`),0);
+        assert.equal((await cdp.eval(`fixtureAdapter.perform({...fixtureArgs,phase:'prepare'})`)).status,'already-blocked');assert.equal(await cdp.eval('fixtureClicks'),0);
+      });
+      await check(`${name}: the same Unblock moved into the feed cannot verify the account`,async()=>{
+        await cdp.eval(`document.querySelector('article').append(document.querySelector('#account-actions'))`);
+        assert.equal((await cdp.eval('fixtureAdapter.inspect(fixtureArgs)')).hasUnblock,false);assert.equal(await cdp.eval('fixtureAdapter.profileScope(fixtureArgs.username).scope===originalCompactScope'),true);assert.equal(await cdp.eval('fixtureClicks'),0);
+      });
       await check(`${name}: an explicit already-blocked header without More is skipped`,async()=>{
         await cdp.eval(`(()=>{const context=fixtureAdapter.profileScope(fixtureArgs.username);context.menu.remove();const button=document.createElement('button');button.textContent='解除封鎖';context.scope.append(button);})()`);
         const result=await cdp.eval(`fixtureAdapter.perform({...fixtureArgs,phase:'prepare'})`);assert.equal(result.status,'already-blocked');assert.equal(result.evidence.diagnostics.hasProfileMenu,false);assert.equal(result.evidence.diagnostics.hasUnblock,true);assert.equal(await cdp.eval('fixtureClicks'),0);

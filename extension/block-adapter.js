@@ -1,6 +1,6 @@
 (function (root) {
   "use strict";
-  if (root.ThreadsBlockAdapter?.version === 3) return;
+  if (root.ThreadsBlockAdapter?.version === 4) return;
   const USER = /^[A-Za-z0-9._]{1,30}$/;
   const HOSTS = new Set(["threads.com", "www.threads.com", "threads.net", "www.threads.net"]);
   const PROFILE_LABELS = new Set(["profile", "個人檔案", "个人主页", "個人主頁", "个人资料"]);
@@ -108,6 +108,29 @@
       return { identities: identities.length, candidates: [...candidates.values()] };
     }
     function profileScope(username) { const found = profileCandidates(username); return found.candidates.length === 1 ? found.candidates[0] : null; }
+    function unblockControl(context, username) {
+      if (!context?.scope || !USER.test(username || "")) return null;
+      const boundary = context.scope.closest?.('[role="region"]');
+      const excluded = 'nav,[role="navigation"],article,[role="article"],aside,[role="complementary"],[role="feed"],[role="dialog"],[role="menu"]';
+      for (let scope = context.scope, depth = 0; scope && depth < 32; scope = scope.parentElement, depth++) {
+        if (scope === doc || ['BODY', 'HTML'].includes(scope.tagName) || scope.closest?.(excluded)) break;
+        // The account action row can be a sibling of the compact name/More
+        // header. Stop before posts, navigation, or another account can supply
+        // an unrelated Unblock control; never scan the entire page.
+        const links = all(scope, 'a[href]');
+        if (links.some(link => /\/@[^/]+\/post\//.test(link.getAttribute('href') || ''))) break;
+        if (all(scope, excluded).length) break;
+        if (links.some(link => { const account = profileUsernameFromUrl(link.getAttribute('href'), href()); return account && low(account) !== low(username); })) break;
+        const buttons = controls(scope);
+        const menus = buttons.filter(element => matchesLabel(element, MORE_LABELS) && element.getAttribute('aria-haspopup') !== 'false');
+        if (context.menu ? menus.length !== 1 || menus[0] !== context.menu : menus.length !== 0) break;
+        const choices = buttons.filter(element => matchesLabel(element, UNBLOCK_LABELS));
+        if (choices.length > 1) return null;
+        if (choices.length === 1) return choices[0];
+        if (scope === boundary) break;
+      }
+      return null;
+    }
     function barrier() {
       const current = href();
       if (/\/(?:login|challenge|checkpoint|accounts\/login)(?:[/?#]|$)/i.test(current)) return "目前頁面要求登入或驗證。";
@@ -156,7 +179,7 @@
       const found = USER.test(username || '') ? profileCandidates(username) : { identities: 0, candidates: [] };
       const actor = readableActorFromNavigation(), profile = profileUsernameFromUrl(href());
       const context = found.candidates.length === 1 ? found.candidates[0] : null;
-      return { stage, currentProfileUsername: profile, expectedUsername: username || null, actorUsernameDetected: actor, targetMatches: !!profile && low(profile) === low(username), actorMatches: !!actor && low(actor) === low(actorUsername), mainCount: all(doc, 'main,[role="main"]').length, identityCandidateCount: found.identities, profileHeaderCandidateCount: found.candidates.length, hasProfileMenu: !!context?.menu, menuPopup: context?.menu?.getAttribute('aria-haspopup') || null, hasUnblock: !!context && controls(context.scope).some(element => matchesLabel(element, UNBLOCK_LABELS)), visibleDialogCount: all(doc, '[role="dialog"],dialog[open]').filter(visible).length, barrier: barrier() };
+      return { stage, currentProfileUsername: profile, expectedUsername: username || null, actorUsernameDetected: actor, targetMatches: !!profile && low(profile) === low(username), actorMatches: !!actor && low(actor) === low(actorUsername), mainCount: all(doc, 'main,[role="main"]').length, identityCandidateCount: found.identities, profileHeaderCandidateCount: found.candidates.length, hasProfileMenu: !!context?.menu, menuPopup: context?.menu?.getAttribute('aria-haspopup') || null, hasUnblock: !!unblockControl(context, username), visibleDialogCount: all(doc, '[role="dialog"],dialog[open]').filter(visible).length, barrier: barrier() };
     }
     function result(status, username, actorUsername, reason, extra = {}) {
       const diagnostics = inspect({ username, actorUsername });
@@ -175,7 +198,7 @@
         if (current.reason) return result("needs-attention", username, actorUsername, current.reason);
         if (phase === "prepare") {
           prepared = null;
-          if (controls(current.context.scope).some(element => matchesLabel(element, UNBLOCK_LABELS))) return result("already-blocked", username, actorUsername, "目標個人檔案已顯示解除封鎖。");
+          if (unblockControl(current.context, username)) return result("already-blocked", username, actorUsername, "目標個人檔案已顯示解除封鎖。");
           if (all(doc, '[role="dialog"],dialog[open]').some(visible)) return result("needs-attention", username, actorUsername, "已有其他對話框開啟，請先關閉後重試。");
           stage = 'profile-actions';
           if (!current.context.menu || !safelyClick(current.context.menu)) return result("needs-attention", username, actorUsername, "目標個人檔案選單被遮擋或無法點擊。");
@@ -213,7 +236,7 @@
         const outcome = await waitFor(() => {
           const issue = guard(username, actorUsername);
           if (issue.reason) return { reason: issue.reason };
-          return controls(issue.context.scope).some(element => matchesLabel(element, UNBLOCK_LABELS)) ? { verified: true } : null;
+          return unblockControl(issue.context, username) ? { verified: true } : null;
         }, 6000);
         if (outcome?.verified) return result("success", username, actorUsername, "已確認目標個人檔案顯示解除封鎖。", { evidence: { verification: "target-profile-unblock-control" } });
         return result("unknown", username, actorUsername, outcome?.reason || "已送出封鎖，但沒有讀到目標已封鎖的明確狀態；不會自動重試。");
@@ -224,7 +247,7 @@
     return Object.freeze({ perform, readableActorFromNavigation, profileScope, targetDialog, inspect });
   }
   let live;
-  const api = Object.freeze({ version: 3, profileUsernameFromUrl, exactAccessibleText, createAdapter, perform(args) { live ||= createAdapter({ document: root.document, location: root.location }); return live.perform(args); }, inspect(args) { live ||= createAdapter({ document: root.document, location: root.location }); return live.inspect(args); }, readableActorFromNavigation() { live ||= createAdapter({ document: root.document, location: root.location }); return live.readableActorFromNavigation(); } });
+  const api = Object.freeze({ version: 4, profileUsernameFromUrl, exactAccessibleText, createAdapter, perform(args) { live ||= createAdapter({ document: root.document, location: root.location }); return live.perform(args); }, inspect(args) { live ||= createAdapter({ document: root.document, location: root.location }); return live.inspect(args); }, readableActorFromNavigation() { live ||= createAdapter({ document: root.document, location: root.location }); return live.readableActorFromNavigation(); } });
   root.ThreadsBlockAdapter = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

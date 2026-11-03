@@ -33,7 +33,9 @@ class Document extends Element {
 function fixture(options={}){
   nextTop=0;
   const doc=new Document(),nav=new Element('nav'),actor=new Element('a',{'href':'/@owner','aria-label':'Profile'}),main=new Element(options.mainTag||'main'),header=new Element('div'),identity=new Element(options.usernameTag||'h2',{},'victim'),more=new Element('button',{'aria-label':'More','aria-haspopup':options.popup||'menu'}),article=new Element('article');
-  doc.append(nav.append(actor),main.append(header.append(identity,more),article.append(new Element('a',{href:'/@victim/post/POST'},'victim post'),new Element('button',{'aria-label':'More'}))));
+  const actionRow=new Element('div'),profileHeader=options.siblingUnblock?new Element('div').append(header,actionRow):header;
+  header.append(identity,more);
+  doc.append(nav.append(actor),main.append(profileHeader,article.append(new Element('a',{href:'/@victim/post/POST'},'victim post'),new Element('button',{'aria-label':'More'}))));
   let location='https://www.threads.com/@victim',time=0,finalClicks=0,menuClicks=0,optionClicks=0;
   let dialog=null,confirmButton=null;
   more.onClick=()=>{
@@ -45,10 +47,10 @@ function fixture(options={}){
       confirmButton=new Element('button',{},'Block');dialog.append(confirmButton);
       if(options.ambiguous)dialog.append(new Element('button',{},'Block'));
       doc.append(dialog);
-      confirmButton.onClick=()=>{finalClicks++;dialog.remove();if(options.barrierAfterClick)doc.append(new Element('div',{role:'alert'},'Try again later'));else if(options.verify!==false)header.append(new Element('button',{},'Unblock'));};
+      confirmButton.onClick=()=>{finalClicks++;dialog.remove();if(options.barrierAfterClick)doc.append(new Element('div',{role:'alert'},'Try again later'));else if(options.verify!==false){const row=options.siblingUnblock?actionRow:header;row.append(new Element('button',{},'Unblock'));if(options.duplicateUnblock)row.append(new Element('button',{},'Unblock'));}};
     };
   };
-  if(options.alreadyBlocked)header.append(new Element('button',{},'Unblock'));
+  if(options.alreadyBlocked)(options.siblingUnblock?actionRow:header).append(new Element('button',{},'Unblock'));
   if(options.withoutMore)more.remove();
   if(options.depth){identity.remove();let parent=header;for(let i=0;i<options.depth;i++){const wrapper=new Element('div');parent.append(wrapper);parent=wrapper;}parent.append(identity);}
   if(options.headerPostLink)header.append(new Element('a',{href:'/@victim/post/PINNED'},'Pinned post'));
@@ -57,7 +59,7 @@ function fixture(options={}){
   if(options.hydrateActor)actor.remove();
   const adapter=Adapter.createAdapter({document:doc,href:()=>location,getComputedStyle:()=>({}),now:()=>time,delay:async ms=>{time+=ms;if(time>=600){if(options.hydrateHeader&&!header.isConnected&&!options.neverHydrate)main.append(header);if(options.hydrateActor&&!actor.isConnected)nav.append(actor);if(options.changeActorDuringHydration)actor.attrs.href='/@someone_else';}},token:()=>`nonce-${time}`});
   const args={username:'victim',actorUsername:'owner'};
-  return {doc,nav,actor,main,header,more,identity,adapter,args,get dialog(){return dialog;},get confirmButton(){return confirmButton;},get elapsed(){return time;},counts:()=>({finalClicks,menuClicks,optionClicks}),setLocation:value=>{location=value;}};
+  return {doc,nav,actor,main,article,header,profileHeader,actionRow,more,identity,adapter,args,get dialog(){return dialog;},get confirmButton(){return confirmButton;},get elapsed(){return time;},counts:()=>({finalClicks,menuClicks,optionClicks}),setLocation:value=>{location=value;}};
 }
 
 test('profile URLs accept only exact HTTPS Threads profiles',()=>{
@@ -79,6 +81,50 @@ test('prepare opens confirmation but never submits the final action',async()=>{
 test('confirm requires its prepare token and verifies the profile unblock control',async()=>{
   const f=fixture(),p=await f.adapter.perform({...f.args,phase:'prepare'}),r=await f.adapter.perform({...f.args,phase:'confirm',confirmationToken:p.confirmationToken});assert.equal(r.status,'success');assert.equal(f.counts().finalClicks,1);
   const repeat=await f.adapter.perform({...f.args,phase:'confirm',confirmationToken:p.confirmationToken});assert.equal(repeat.status,'needs-attention');assert.equal(f.counts().finalClicks,1);
+});
+
+test('a sibling account action row verifies success without widening the prepared scope',async()=>{
+  const f=fixture({mainTag:'div',popup:'dialog',siblingUnblock:true});
+  const originalScope=f.adapter.profileScope('victim').scope;
+  assert.equal(originalScope,f.header);assert.equal(f.adapter.inspect(f.args).hasUnblock,false);
+  const p=await f.adapter.perform({...f.args,phase:'prepare'});
+  assert.equal(p.status,'prepared');assert.equal(f.adapter.profileScope('victim').scope,originalScope);
+  const result=await f.adapter.perform({...f.args,phase:'confirm',confirmationToken:p.confirmationToken});
+  assert.equal(result.status,'success');assert.equal(f.adapter.inspect(f.args).hasUnblock,true);assert.equal(f.adapter.profileScope('victim').scope,originalScope);assert.equal(f.counts().finalClicks,1);
+});
+
+test('an already-blocked sibling action row is recognized before any menu click',async()=>{
+  const f=fixture({mainTag:'div',popup:'dialog',siblingUnblock:true,alreadyBlocked:true});
+  assert.equal(f.adapter.inspect(f.args).hasUnblock,true);assert.equal((await f.adapter.perform({...f.args,phase:'prepare'})).status,'already-blocked');assert.deepEqual(f.counts(),{finalClicks:0,menuClicks:0,optionClicks:0});
+});
+
+test('feed, recommendation and other-account unblock controls cannot verify the target',async()=>{
+  for(const unrelated of [
+    ()=>new Element('article').append(new Element('button',{},'Unblock')),
+    ()=>new Element('div',{role:'feed'}).append(new Element('button',{},'Unblock')),
+    ()=>new Element('aside').append(new Element('button',{},'Unblock')),
+    ()=>new Element('div').append(new Element('a',{href:'/@another'},'another'),new Element('button',{},'Unblock')),
+    ()=>new Element('div').append(new Element('a',{href:'/@victim/post/POST'},'post'),new Element('button',{},'Unblock')),
+    ()=>new Element('div').append(new Element('button',{'aria-label':'More'}),new Element('button',{},'Unblock'))
+  ]){
+    const f=fixture({mainTag:'div',siblingUnblock:true,verify:false});f.profileHeader.append(unrelated());
+    assert.equal(f.adapter.inspect(f.args).hasUnblock,false);
+    const p=await f.adapter.perform({...f.args,phase:'prepare'}),r=await f.adapter.perform({...f.args,phase:'confirm',confirmationToken:p.confirmationToken});
+    assert.equal(p.status,'prepared');assert.equal(r.status,'unknown');assert.equal(f.counts().finalClicks,1);
+  }
+});
+
+test('multiple unblock controls and controls beyond the profile region remain unverified',async()=>{
+  const duplicate=fixture({siblingUnblock:true,duplicateUnblock:true}),p=await duplicate.adapter.perform({...duplicate.args,phase:'prepare'});
+  assert.equal((await duplicate.adapter.perform({...duplicate.args,phase:'confirm',confirmationToken:p.confirmationToken})).status,'unknown');assert.equal(duplicate.adapter.inspect(duplicate.args).hasUnblock,false);
+  const outside=fixture({siblingUnblock:true,verify:false});outside.profileHeader.attrs.role='region';outside.main.append(new Element('button',{},'Unblock'));outside.article.remove();
+  assert.equal(outside.adapter.inspect(outside.args).hasUnblock,false);
+});
+
+test('moving the compact header to a replacement scope still invalidates confirmation',async()=>{
+  const f=fixture({siblingUnblock:true}),p=await f.adapter.perform({...f.args,phase:'prepare'});
+  f.identity.remove();f.more.remove();f.header.remove();f.profileHeader.append(new Element('div').append(f.identity,f.more));
+  assert.equal((await f.adapter.perform({...f.args,phase:'confirm',confirmationToken:p.confirmationToken})).status,'needs-attention');assert.equal(f.counts().finalClicks,0);
 });
 test('wrong tokens and confirms without preparation never click',async()=>{
   const f=fixture();assert.equal((await f.adapter.perform({...f.args,phase:'confirm',confirmationToken:'none'})).status,'needs-attention');await f.adapter.perform({...f.args,phase:'prepare'});assert.equal((await f.adapter.perform({...f.args,phase:'confirm',confirmationToken:'wrong'})).status,'needs-attention');assert.equal(f.counts().finalClicks,0);
