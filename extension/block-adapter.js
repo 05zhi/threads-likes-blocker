@@ -1,6 +1,6 @@
 (function (root) {
   "use strict";
-  if (root.ThreadsBlockAdapter?.version === 7) return;
+  if (root.ThreadsBlockAdapter?.version === 8) return;
   const USER = /^[A-Za-z0-9._]{1,30}$/;
   const HOSTS = new Set(["threads.com", "www.threads.com", "threads.net", "www.threads.net"]);
   const PROFILE_LABELS = new Set(["profile", "個人檔案", "个人主页", "個人主頁", "个人资料"]);
@@ -245,7 +245,7 @@
       const found = USER.test(username || '') ? profileCandidates(username) : { identities: 0, candidates: [] };
       const actor = readableActorFromNavigation(), profile = profileUsernameFromUrl(href());
       const context = found.candidates.length === 1 ? found.candidates[0] : null;
-      return { adapterVersion: 7, documentVisibility: doc.visibilityState || "unknown", stage, currentProfileUsername: profile, expectedUsername: username || null, actorUsernameDetected: actor, targetMatches: !!profile && low(profile) === low(username), actorMatches: !!actor && low(actor) === low(actorUsername), mainCount: all(doc, 'main,[role="main"]').length, identityCandidateCount: found.identities, profileHeaderCandidateCount: found.candidates.length, hasProfileMenu: !!context?.menu, menuPopup: context?.menu?.getAttribute('aria-haspopup') || null, hasUnblock: !!unblockControl(context, username), visibleDialogCount: all(doc, '[role="dialog"],dialog[open]').filter(visible).length, visibleMenuCount: all(doc, '[role="menu"]').filter(visible).length, visibleBlockControlCount: controls(doc).filter(element => matchesLabel(element, BLOCK_LABELS)).length, menuDiscovery: menuDiagnostics ? { ...menuDiagnostics } : null, barrier: barrier() };
+      return { adapterVersion: 8, documentVisibility: doc.visibilityState || "unknown", stage, currentProfileUsername: profile, expectedUsername: username || null, actorUsernameDetected: actor, targetMatches: !!profile && low(profile) === low(username), actorMatches: !!actor && low(actor) === low(actorUsername), mainCount: all(doc, 'main,[role="main"]').length, identityCandidateCount: found.identities, profileHeaderCandidateCount: found.candidates.length, hasProfileMenu: !!context?.menu, menuPopup: context?.menu?.getAttribute('aria-haspopup') || null, hasUnblock: !!unblockControl(context, username), visibleDialogCount: all(doc, '[role="dialog"],dialog[open]').filter(visible).length, visibleMenuCount: all(doc, '[role="menu"]').filter(visible).length, visibleBlockControlCount: controls(doc).filter(element => matchesLabel(element, BLOCK_LABELS)).length, menuDiscovery: menuDiagnostics ? { ...menuDiagnostics } : null, barrier: barrier() };
     }
     function result(status, username, actorUsername, reason, extra = {}) {
       const diagnostics = inspect({ username, actorUsername });
@@ -253,16 +253,24 @@
     }
     async function perform(args) {
       const { username, actorUsername, phase, confirmationToken } = args || {};
-      if (!["prepare", "confirm"].includes(phase)) return result("needs-attention", username, actorUsername, "未知的執行階段。");
+      if (!["prepare", "confirm", "capture", "verify"].includes(phase)) return result("needs-attention", username, actorUsername, "未知的執行階段。");
       let finalActionAttempted = false; stage = phase === 'prepare' ? 'profile-ready' : 'confirm-guard';
       const guardResult = issue => result(issue.code === 'background' ? 'deferred' : 'needs-attention', username, actorUsername, issue.reason, { evidence: { finalActionAttempted: false } });
       try {
         let current = guard(username, actorUsername);
-        if (phase === 'prepare' && ['actor-missing', 'profile-missing'].includes(current.code)) {
+        if (['prepare', 'verify'].includes(phase) && ['actor-missing', 'profile-missing'].includes(current.code)) {
           stage = 'profile-hydration';
           current = await waitFor(() => { const ready = guard(username, actorUsername); return ['actor-missing', 'profile-missing'].includes(ready.code) ? null : ready; }, 8000) || guard(username, actorUsername);
         }
         if (current.reason) return guardResult(current);
+        if (phase === 'verify') {
+          stage = 'reloaded-verification';
+          const verified = await waitFor(() => {
+            const issue = guard(username, actorUsername);
+            return !issue.reason && unblockControl(issue.context, username) ? true : null;
+          }, 12000);
+          return result(verified ? 'success' : 'unknown', username, actorUsername, verified ? '重新載入後已確認目標個人檔案顯示解除封鎖。' : '重新載入後沒有確認封鎖狀態，不會重試。');
+        }
         if (phase === "prepare") {
           prepared = null; menuDiagnostics = null;
           if (unblockControl(current.context, username)) return result("already-blocked", username, actorUsername, "目標個人檔案已顯示解除封鎖。");
@@ -312,6 +320,7 @@
         prepared = null; stage = 'block-submit';
         finalActionAttempted = true;
         if (!safelyClick(dialog.button)) return result("needs-attention", username, actorUsername, "封鎖確認按鈕被遮擋或已停用。");
+        if (phase === 'capture') return result('capture-triggered', username, actorUsername, '已觸發網站請求；須由背景確認攔截成功，不能視為已封鎖。');
         stage = 'block-verification';
         const outcome = await waitFor(() => {
           const issue = guard(username, actorUsername);
@@ -328,7 +337,7 @@
     return Object.freeze({ perform, readableActorFromNavigation, profileScope, targetDialog, inspect });
   }
   let live;
-  const api = Object.freeze({ version: 7, profileUsernameFromUrl, exactAccessibleText, createAdapter, perform(args) { live ||= createAdapter({ document: root.document, location: root.location }); return live.perform(args); }, inspect(args) { live ||= createAdapter({ document: root.document, location: root.location }); return live.inspect(args); }, readableActorFromNavigation() { live ||= createAdapter({ document: root.document, location: root.location }); return live.readableActorFromNavigation(); } });
+  const api = Object.freeze({ version: 8, profileUsernameFromUrl, exactAccessibleText, createAdapter, perform(args) { live ||= createAdapter({ document: root.document, location: root.location }); return live.perform(args); }, inspect(args) { live ||= createAdapter({ document: root.document, location: root.location }); return live.inspect(args); }, readableActorFromNavigation() { live ||= createAdapter({ document: root.document, location: root.location }); return live.readableActorFromNavigation(); } });
   root.ThreadsBlockAdapter = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

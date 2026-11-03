@@ -1,7 +1,7 @@
 /* Only an explicit panel command starts a blocking job. */
 importScripts("core.js", "job.js", "request-probe-core.js");
 const Core = globalThis.ThreadsProbeCore, Jobs = globalThis.ThreadsBlockJob;
-const BUILD_VERSION = "0.4.6";
+const BUILD_VERSION = "0.4.7";
 const JOB_KEY = "threadsBlocker.job.v1";
 let job = null, runner = null, serial = Promise.resolve(), workerOwnership = null;
 const openingTabs = new Set();
@@ -51,7 +51,7 @@ async function closeWorker(task) {
   workerOwnership = null;
   try { const tab = await chrome.tabs.get(id), profile = Core.profileFromHref(tab.url); if (profile && task.items.some(a => a.username.toLowerCase() === profile.username.toLowerCase())) await chrome.tabs.remove(id); } catch { /* Already closed or user navigated elsewhere. */ }
 }
-async function waitForProfile(tabId, username, taskId) {
+async function waitForProfile(tabId, username, taskId, oldDocumentToken = null) {
   const deadline = Date.now() + 20000;
   while (Date.now() < deadline) {
     if (job?.id !== taskId || job.status !== "running") return false;
@@ -61,6 +61,10 @@ async function waitForProfile(tabId, username, taskId) {
     } else if (tab.status === "complete") {
       const profile = Core.profileFromHref(tab.url);
       if (!profile || profile.username.toLowerCase() !== username.toLowerCase()) throw new Error("個人檔案導向其他頁面，尚未封鎖。");
+      if (oldDocumentToken) {
+        const fresh = await chrome.scripting.executeScript({ target: { tabId }, func: token => document.readyState === 'complete' && globalThis.__threadsDirectDocumentToken !== token, args: [oldDocumentToken] });
+        if (fresh.length !== 1 || fresh[0].result !== true) { await wait(250); continue; }
+      }
       return true;
     }
     await wait(250);
@@ -82,6 +86,56 @@ async function finishRequestProbe(tabId) {
   if (response.length !== 1 || !response[0].result) throw new Error('Request probe unavailable');
   // Page-world output is untrusted; sanitize again before storing/exporting it.
   return globalThis.ThreadsRequestProbeCore.cleanReport(response[0].result);
+}
+async function directCall(tabId, method, args) {
+  const response = await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: (method, args) => globalThis.ThreadsDirectRequest?.[method](args), args: [method, args ?? null] });
+  return response.length === 1 ? response[0].result : null;
+}
+async function verifyDirectRequest(tabId, taskId, username, actorUsername, confirmationToken) {
+  let captured = false, attempted = false, triggered = false;
+  const deferred = () => ({ status: 'deferred', reason: '直接請求送出前已暫停，尚未封鎖。', evidence: { finalActionAttempted: false } });
+  const authorized = () => job?.id === taskId && job.current === username && job.status === 'running';
+  try {
+    await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', files: ['request-probe-core.js', 'direct-request.js'] });
+    if ((await directCall(tabId, 'arm', { username }))?.active !== true) throw new Error('直接請求驗證未啟動。');
+    await assertSource(job);
+    if (!authorized()) return deferred();
+    triggered = true;
+    const trigger = await adapter(tabId, { username, actorUsername, phase: 'capture', confirmationToken });
+    if (trigger.status !== 'capture-triggered') return trigger;
+    const deadline = Date.now() + 6000;
+    while (Date.now() < deadline) {
+      const status = await directCall(tabId, 'status');
+      if (status?.refused) return { status: 'needs-attention', reason: '請求不符合已觀察格式或有多筆候選；未直接送出。' };
+      if (status?.captured) { captured = true; break; }
+      await wait(100);
+    }
+    if (!captured) return { status: 'unknown', reason: '未確認攔截到網站請求，可能仍由原網站送出；不重送。' };
+    await assertSource(job);
+    await mutate(async () => { if (authorized()) { job.phase = 'direct-submitting'; await save(); } });
+    if (!authorized()) return deferred();
+    attempted = true; // A lost bridge response after dispatch is also unknown.
+    const sent = await directCall(tabId, 'submit');
+    const report = globalThis.ThreadsRequestProbeCore.cleanReport(sent?.report);
+    await mutate(async () => { if (job?.id === taskId) { job.directRequest = { attempted: sent?.attempted !== false, responseAccepted: sent?.accepted === true, verifiedAfterReload: false, report }; await save(); } });
+    // Always re-read server-rendered state; an optimistic UI or HTTP 200 alone
+    // must not certify a direct block. No fallback or automatic replay.
+    const documentToken = crypto.randomUUID();
+    await chrome.scripting.executeScript({ target: { tabId }, func: token => { globalThis.__threadsDirectDocumentToken = token; }, args: [documentToken] });
+    await chrome.tabs.reload(tabId, { bypassCache: true });
+    if (!await waitForProfile(tabId, username, taskId, documentToken)) return { status: 'unknown', reason: '直接提交後已暫停，尚未核對重新載入的結果。' };
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['core.js', 'block-adapter.js'] });
+    const verified = await adapter(tabId, { username, actorUsername, phase: 'verify' });
+    const success = sent?.attempted === true && sent?.accepted === true && verified.status === 'success';
+    await mutate(async () => { if (job?.id === taskId) { job.directRequest.verifiedAfterReload = success; await save(); } });
+    return { status: success ? 'success' : 'unknown', reason: success ? '直接請求已回應，且重新載入後確認已封鎖。' : '直接請求或重新載入核對未通過；不會重試。', evidence: { directRequest: true, verifiedAfterReload: success, diagnostics: verified.evidence?.diagnostics } };
+  } finally {
+    try { await directCall(tabId, 'dispose'); } catch {}
+    // Discard the website's optimistic state after a held-but-unsent request.
+    if (triggered && !attempted) {
+      try { const tab = await chrome.tabs.get(tabId); if (Core.profileFromHref(tab.url)?.username.toLowerCase() === username.toLowerCase()) await chrome.tabs.reload(tabId, { bypassCache: true }); } catch {}
+    }
+  }
 }
 async function readActor(tabId) {
   const tab = await chrome.tabs.get(tabId);
@@ -185,7 +239,10 @@ async function run() {
         await chrome.scripting.executeScript({ target: { tabId }, files: ["core.js", "block-adapter.js"] });
         if (job.requestProbeEnabled) { await beginRequestProbe(tabId); probeTabId = tabId; }
         result = await adapter(tabId, { username, actorUsername, phase: "prepare" });
-        if (result.status === "prepared") {
+        if (result.status === 'prepared' && job.directRequestTest) {
+          submitted = true;
+          result = await verifyDirectRequest(tabId, taskId, username, actorUsername, result.confirmationToken);
+        } else if (result.status === "prepared") {
           await assertSource(job);
           const maySubmit = await mutate(async () => {
             if (job.id !== taskId || job.current !== username || job.status !== "running") return false;
@@ -243,8 +300,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const nextJob = Jobs.createJob({ accounts: message.accounts, target: message.target, includeAuthor: message.includeAuthor, actorUsername: message.actorUsername, sourceTabId: sender.tab.id }, now());
         if (message.probeRequest !== undefined && typeof message.probeRequest !== 'boolean') throw new Error('請求驗證選項無效。');
         if (message.probeRequest === true && nextJob.items.length !== 1) throw new Error('請求驗證一次只處理一個已確認帳號。');
+        if (message.directRequestTest !== undefined && typeof message.directRequestTest !== 'boolean') throw new Error('直接請求驗證選項無效。');
+        if (message.directRequestTest === true && (nextJob.items.length !== 1 || message.probeRequest === true)) throw new Error('直接請求驗證只允許單一帳號，不能同時開啟觀察模式。');
         job = nextJob;
         if (message.probeRequest === true) { job.requestProbeEnabled = true; job.executionMode = 'ui-request-probe'; }
+        if (message.directRequestTest === true) { job.directRequestTest = true; job.executionMode = 'single-direct-verification'; }
         job.sourcePage = sourcePage(sender.tab.url);
         job.extensionVersion = identity.runtimeVersion;
         job.buildVersion = identity.buildVersion; job.runtimeVersion = identity.runtimeVersion;

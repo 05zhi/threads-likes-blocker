@@ -8,7 +8,7 @@ const Core = require('../extension/request-probe-core.js');
 const source = fs.readFileSync(path.join(__dirname, '../extension/request-probe.js'), 'utf8');
 const url = 'https://www.threads.com/api/graphql/?secret=NEVER_EXPORT';
 const body = () => new URLSearchParams({ fb_api_req_friendly_name: 'FixtureBlockMutation', doc_id: '123456', fb_dtsg: 'PRIVATE_CSRF', lsd: 'PRIVATE_LSD', variables: JSON.stringify({ input: { target_user_id: '98765', block_on_instagram: false, block_type: 'threads_only', password: 'PRIVATE_PASSWORD', token: 'PRIVATE_TOKEN', arbitrary: 'PRIVATE_CONTENT' } }) }).toString();
-function fixture({ reject = false } = {}) {
+function fixture({ reject = false, delayedXHR = false } = {}) {
   const calls = [], timers = [], response = new Response(JSON.stringify({ data: { block: { user_id: '98765', blocking: true, session_token: 'PRIVATE_RESPONSE' } } }), { status: 200 });
   const promise = reject ? Promise.reject(new Error('network failure')) : Promise.resolve(response);
   promise.catch(() => {});
@@ -17,7 +17,7 @@ function fixture({ reject = false } = {}) {
     constructor() { this.listeners = {}; this.status = 200; this.responseType = ''; this.responseText = '{"status":"ok","access_token":"PRIVATE_RESPONSE"}'; }
     open(...args) { this.openArgs = args; }
     setRequestHeader(...args) { (this.headers ||= []).push(args); }
-    send(value) { this.sent = value; this.listeners.loadend?.(); return 'original-return'; }
+    send(value) { this.sent = value; if (!delayedXHR) this.listeners.loadend?.(); return 'original-return'; }
     addEventListener(name, fn) { this.listeners[name] = fn; }
   }
   const context = vm.createContext({ ThreadsRequestProbeCore: Core, fetch, XMLHttpRequest: XHR, URL, URLSearchParams, FormData, Headers, Request, location: { href: 'https://www.threads.com/@fixture' },
@@ -84,4 +84,11 @@ test('candidate reports have bounded record and field counts', async () => {
 test('a later website hook is not overwritten during probe cleanup', async () => {
   const f = fixture(); f.api.begin(); const later = () => Promise.resolve(); f.context.fetch = later;
   await f.api.finish(); assert.equal(f.context.fetch, later);
+});
+
+test('finish waits for an outstanding XHR response instead of losing it after optimistic UI success', async () => {
+  const f = fixture({ delayedXHR: true }); f.api.begin(); const xhr = new f.XHR(); xhr.open('POST', url); xhr.send(body());
+  let done = false; const finish = f.api.finish().then(r => { done = true; return r; });
+  await Promise.resolve(); assert.equal(done, false); xhr.listeners.loadend();
+  const report = await finish; assert.equal(report.records[0].response.status, 200); assert.equal(report.records[0].response.json, true);
 });

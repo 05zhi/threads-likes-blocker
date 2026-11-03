@@ -1,7 +1,7 @@
 /* Collector reads DOM; explicit user-confirmed blocking runs in the background. */
 (() => {
   "use strict";
-  const EXTENSION_VERSION = "0.4.6";
+  const EXTENSION_VERSION = "0.4.7";
   const EXTENSION_ID = chrome.runtime?.id || "";
   const RUNTIME_VERSION = chrome.runtime?.getManifest?.()?.version || EXTENSION_VERSION;
   if (RUNTIME_VERSION !== EXTENSION_VERSION) throw new Error("套件與面板版本不一致，請重新載入擴充功能。");
@@ -62,7 +62,7 @@
           <div class="buttons"><button id="blockStart" class="primary">一鍵封鎖已選名單</button><button id="blockPause">暫停封鎖</button><button id="blockResume">繼續封鎖</button><button id="blockStop" class="danger">中止封鎖</button></div>
           <div id="blockStatus" role="status" aria-live="polite">尚無封鎖工作</div><div id="blockResults"></div>
           <p class="hint">開始／繼續時會切換到工作分頁，請保持它在前景。切回來源分頁會暫停，可在這裡繼續或中止。</p>
-          <details id="requestProbeTools"><summary>驗證快速封鎖方法</summary><p class="hint">只選一個尚未封鎖的帳號並完成名單確認。此測試會用現有網頁流程真的封鎖，記錄已去除憑證的請求資訊；尚未啟用直接請求或快速批次模式。</p><button id="probeStart">封鎖此帳號並記錄請求</button><p id="probeStatus" class="hint" role="status"></p></details>
+          <details id="requestProbeTools"><summary>驗證快速封鎖方法</summary><p class="hint">只選一個尚未封鎖的帳號並完成名單確認。直接請求測試會保留網站產生的同一筆封鎖內容，改由工具提交一次，再重新載入核對。測試會真的封鎖此人；目前尚未開放快速批次。</p><button id="directStart">驗證直接請求並封鎖此帳號</button><button id="probeStart">僅用網頁封鎖並記錄請求</button><p id="probeStatus" class="hint" role="status"></p></details>
           <p class="hint">會更改 Threads 帳號狀態。暫停／中止不撤銷已完成封鎖；結果不明不會自動重試。</p>
         </section>
         <details id="tools"><summary>匯出與本機紀錄</summary><div class="buttons"><button id="diagnostics">匯出完整診斷 JSON</button><button id="json">匯出名單 JSON</button><button id="csv">匯出 CSV</button><button id="blockExport">匯出封鎖紀錄</button><button id="clear" class="danger">清除名單</button></div></details>
@@ -232,8 +232,11 @@
     $("blockStart").disabled = !compatibleBackground() || !detectedActor || actorChecking || !state.target || state.target.url !== $("target").value || held || blocking || blockRequest || !(likers.length + (extraAuthor ? 1 : 0));
     $("blockStart").textContent = `一鍵封鎖 ${likers.length + (extraAuthor ? 1 : 0)} 個帳號`;
     $("probeStart").disabled = $("blockStart").disabled || likers.length + (extraAuthor ? 1 : 0) !== 1;
-    $("requestProbeTools").hidden = blocking && !blockJob?.requestProbeEnabled;
-    $("probeStatus").textContent = blockJob?.requestProbe
+    $("directStart").disabled = $("probeStart").disabled;
+    $("requestProbeTools").hidden = blocking && !blockJob?.requestProbeEnabled && !blockJob?.directRequestTest;
+    $("probeStatus").textContent = blockJob?.directRequest
+      ? blockJob.directRequest.verifiedAfterReload ? '此帳號直接提交及重新載入核對已通過。請匯出完整診斷 JSON，尚未啟用快速批次。' : '直接請求尚未通過完整核對。請匯出完整診斷 JSON；不會自動重試。'
+      : blockJob?.directRequestTest ? '單一帳號直接請求驗證中。' : blockJob?.requestProbe
       ? `已記錄 ${blockJob.requestProbe.records?.length || 0} 筆候選請求。請匯出完整診斷 JSON；尚未確認直接請求可用或作用範圍。`
       : blockJob?.requestProbeEnabled ? '請求驗證中；仍使用網頁操作。' : '';
     $("blockPause").disabled = blockJob?.status !== "running" || blockRequest;
@@ -448,7 +451,7 @@
     try { return await actorPromise; } finally { actorPromise = null; }
   }
   $("refreshActor").onclick = refreshActor;
-  async function startBlocking(probeRequest = false) {
+  async function startBlocking(probeRequest = false, directRequestTest = false) {
     if (!state.target || !$("blockConfirmed").checked) return notice("請先檢查完整名單並勾選封鎖確認。");
     if (actorChecking || blockRequest) return;
     const previousActor = detectedActor, target = JSON.parse(JSON.stringify(state.target)), sourcePage = pageIdentity();
@@ -462,11 +465,12 @@
     if (previousActor.toLowerCase() !== actorUsername.toLowerCase() || !$("blockConfirmed").checked || state.target?.url !== target.url || $("target").value !== target.url) return notice("登入帳號或目標已改變。請重新檢查名單並確認。");
     const count = accounts.length + (includeAuthor && target.username.toLowerCase() !== actorUsername.toLowerCase() ? 1 : 0);
     if (!count) return notice("沒有可封鎖的已選帳號。");
-    if (probeRequest && count !== 1) return notice('請只選一個帳號進行請求驗證（包含作者選項）。');
-    blockCommand("BLOCK_START", { target, accounts, includeAuthor, actorUsername, confirmed: true, ...(probeRequest ? { probeRequest: true } : {}) });
+    if ((probeRequest || directRequestTest) && count !== 1) return notice('請只選一個帳號進行請求驗證（包含作者選項）。');
+    blockCommand("BLOCK_START", { target, accounts, includeAuthor, actorUsername, confirmed: true, ...(probeRequest ? { probeRequest: true } : {}), ...(directRequestTest ? { directRequestTest: true } : {}) });
   }
   $("blockStart").onclick = () => startBlocking();
   $("probeStart").onclick = () => startBlocking(true);
+  $("directStart").onclick = () => startBlocking(false, true);
   $("blockPause").onclick = () => blockCommand("BLOCK_PAUSE");
   $("blockResume").onclick = async () => {
     if (actorChecking || blockRequest) return;

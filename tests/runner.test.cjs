@@ -10,7 +10,7 @@ const source=fs.readFileSync(path.join(dir,'background.js'),'utf8');
 const JOB_KEY='threadsBlocker.job.v1';
 const target={url:'https://www.threads.com/@author/post/TEST',kind:'post'};
 const account=username=>({username,profileUrl:`https://www.threads.com/@${username}`});
-const panelIdentity={panelVersion:'0.4.6',extensionId:'fixture-extension'};
+const panelIdentity={panelVersion:'0.4.7',extensionId:'fixture-extension'};
 const initial=()=>({...panelIdentity,type:'BLOCK_START',confirmed:true,target,accounts:[account('alice'),account('bob')],actorUsername:'me',includeAuthor:false});
 const sender={tab:{id:7,url:target.url},url:target.url};
 const clone=value=>value===undefined?undefined:JSON.parse(JSON.stringify(value));
@@ -21,22 +21,28 @@ async function until(predicate,label){for(let i=0;i<150;i++){if(predicate())retu
 function harness(options={}) {
   const calls=[],tabs=new Map([[7,{id:7,url:target.url,status:'complete'}]]),store=options.saved?{[JOB_KEY]:clone(options.saved)}:{};
   for(const tab of options.tabs||[])tabs.set(tab.id,clone(tab));
-  const listeners={};let workerId=100;
+  const listeners={};let workerId=100,freshChecks=0;
   const context=vm.createContext({URL,crypto:require('node:crypto').webcrypto,setTimeout:fn=>setImmediate(fn),clearTimeout:clearImmediate,console,
     chrome:{
       storage:{local:{async get(key){return{[key]:clone(store[key])};},async set(value){Object.assign(store,clone(value));calls.push({kind:'save',job:clone(value[JOB_KEY])});}}},
-      runtime:{id:'fixture-extension',getManifest(){return{version:options.runtimeVersion===undefined?'0.4.6':options.runtimeVersion}},onMessage:{addListener(fn){listeners.message=fn;}}},
+      runtime:{id:'fixture-extension',getManifest(){return{version:options.runtimeVersion===undefined?'0.4.7':options.runtimeVersion}},onMessage:{addListener(fn){listeners.message=fn;}}},
       action:{onClicked:{addListener(fn){listeners.action=fn;}},async setBadgeText(){},async setTitle(){}},
       tabs:{
         onRemoved:{addListener(fn){listeners.removed=fn;}},onUpdated:{addListener(fn){listeners.updated=fn;}},onActivated:{addListener(fn){listeners.activated=fn;}},
         async create(value){const tab={id:workerId++,url:value.url,active:value.active,status:'complete'};tabs.set(tab.id,tab);calls.push({kind:'create',...value,id:tab.id});return clone(tab);},
         async get(id){calls.push({kind:'get',id});if(!tabs.has(id))throw new Error('Tab not found');return clone(tabs.get(id));},
         async update(id,value){if(!tabs.has(id))throw new Error('Tab not found');Object.assign(tabs.get(id),value,{status:'complete'});calls.push({kind:'navigate',id,...value});return clone(tabs.get(id));},
+        async reload(id,value){calls.push({kind:'reload',id,...value});if(!options.staleDocument)delete context.__threadsDirectDocumentToken;},
         async remove(id){tabs.delete(id);calls.push({kind:'remove',id});listeners.removed?.(id);}
       },
       scripting:{async executeScript(value){
         if(value.files){calls.push({kind:'inject',tabId:value.target.tabId,files:Array.from(value.files)});return[];}
         if(value.world==='MAIN'){
+          if(String(value.func).includes('ThreadsDirectRequest')) {
+            const method=value.args[0];calls.push({kind:'direct-'+method});
+            if(options.direct)return[{result:await options.direct(method,calls)}];
+            return[{result:method==='arm'?{active:true}:method==='status'?{captured:true}:method==='submit'?{attempted:true,accepted:true,report:{records:[]}}:null}];
+          }
           if(String(value.func).includes('.begin()')){calls.push({kind:'probe-begin'});if(options.failProbe)throw new Error('probe failed');return[{result:{active:true}}];}
           calls.push({kind:'probe-finish'});return[{result:{records:[],directRequestVerified:true,secret:'MUST_NOT_PERSIST'}}];
         }
@@ -44,12 +50,16 @@ function harness(options={}) {
         if(args&&typeof args==='object'&&args.phase){
           const call={kind:'adapter',tabId:value.target.tabId,...clone(args)};calls.push(call);
           if(options.adapter)return options.adapter(args,call,calls);
-          return[{result:args.phase==='prepare'?{status:'prepared',confirmationToken:'mock-token'}:{status:'success'}}];
+          return[{result:args.phase==='prepare'?{status:'prepared',confirmationToken:'mock-token'}:args.phase==='capture'?{status:'capture-triggered'}:{status:'success'}}];
         }
         if(String(value.func).includes('readableActorFromNavigation')){
           calls.push({kind:'read-actor',tabId:value.target.tabId});
           if(options.actorRead)return options.actorRead(tabs,calls);
           return[{result:options.actorUsername===undefined?'me':options.actorUsername}];
+        }
+        if(String(value.func).includes('__threadsDirectDocumentToken')) {
+          if(String(value.func).includes('document.readyState')) {calls.push({kind:'fresh-document-check'});return[{result:!options.staleDocument&&++freshChecks>(options.staleChecks||0)}];}
+          context.__threadsDirectDocumentToken=value.args[0];return[];
         }
         value.func?.(...(value.args||[]));return[];
       }}
@@ -65,7 +75,7 @@ function harness(options={}) {
 test('GET exposes background build, runtime and extension identity without requiring a current panel',async()=>{
   const h=harness();await h.ready;
   const response=await h.message({type:'BLOCK_GET'});
-  assert.equal(response.ok,true);assert.equal(response.job,null);assert.equal(response.buildVersion,'0.4.6');assert.equal(response.runtimeVersion,'0.4.6');assert.equal(response.extensionId,'fixture-extension');
+  assert.equal(response.ok,true);assert.equal(response.job,null);assert.equal(response.buildVersion,'0.4.7');assert.equal(response.runtimeVersion,'0.4.7');assert.equal(response.extensionId,'fixture-extension');
   assert.equal(h.calls.some(c=>['create','navigate','inject','adapter','save'].includes(c.kind)),false);
 });
 
@@ -86,9 +96,9 @@ test('legacy, stale and wrong-extension panels cannot start or resume blocking',
 test('mixed background and runtime builds refuse dispatch while legacy pause, stop and GET stay available',async()=>{
   const saved=Jobs.pause(Jobs.createJob({...initial(),sourceTabId:7},'2026-11-03T00:00:00.000Z'),'2026-11-03T00:00:01.000Z');
   const h=harness({runtimeVersion:'0.3.0',saved});await h.ready;h.calls.length=0;
-  const report=await h.message({type:'BLOCK_GET'});assert.equal(report.buildVersion,'0.4.6');assert.equal(report.runtimeVersion,'0.3.0');
+  const report=await h.message({type:'BLOCK_GET'});assert.equal(report.buildVersion,'0.4.7');assert.equal(report.runtimeVersion,'0.3.0');
   for(const type of ['BLOCK_START','BLOCK_RESUME']){
-    const response=await h.message({...initial(),type});assert.equal(response.ok,false);assert.match(response.error,/背景程式版本 0\.4\.6 與套件版本 0\.3\.0/);
+    const response=await h.message({...initial(),type});assert.equal(response.ok,false);assert.match(response.error,/背景程式版本 0\.4\.7 與套件版本 0\.3\.0/);
   }
   assert.equal(h.calls.some(c=>['create','navigate','inject','adapter','save'].includes(c.kind)),false);
   assert.equal((await h.message({type:'BLOCK_PAUSE'})).ok,true);assert.equal((await h.message({type:'BLOCK_STOP'})).ok,true);assert.equal(h.job().status,'stopped');
@@ -173,7 +183,7 @@ test('runner prepares before confirming and processes a selected account once',a
   await until(()=>h.job()?.status==='completed','completion');
   assert.deepEqual(h.phases(),['prepare','confirm']);assert.equal(h.job().items[0].status,'success');assert.equal(h.job().items[0].attempts,1);
   assert.equal(h.calls.find(c=>c.kind==='adapter'&&c.phase==='confirm').confirmationToken,'mock-token');
-  for(const key of ['extensionVersion','buildVersion','runtimeVersion','clientPanelVersion'])assert.equal(h.job()[key],'0.4.6');assert.equal(h.job().extensionId,'fixture-extension');
+  for(const key of ['extensionVersion','buildVersion','runtimeVersion','clientPanelVersion'])assert.equal(h.job()[key],'0.4.7');assert.equal(h.job().extensionId,'fixture-extension');
   await until(()=>h.calls.some(c=>c.kind==='remove'),'worker cleanup');assert.equal(h.job().workerTabId,null);
 });
 test('only one job can run or remain paused at a time',async()=>{
@@ -341,6 +351,47 @@ test('normal jobs do not install request observers',async()=>{
   const h=harness();await h.ready;await h.message({...initial(),accounts:[account('alice')]});
   await until(()=>h.job().status==='completed','normal completion');
   assert.equal(h.calls.some(c=>c.kind==='probe-begin'),false);assert.equal(h.calls.some(c=>c.files?.includes('request-probe.js')),false);
+  assert.equal(h.calls.some(c=>c.files?.includes('direct-request.js')),false);
+});
+
+const directStart=()=>({...initial(),accounts:[account('alice')],directRequestTest:true});
+test('direct verification requires one confirmed target and excludes simultaneous observer mode',async()=>{
+  for(const payload of [{...initial(),directRequestTest:true},{...directStart(),confirmed:false},{...directStart(),probeRequest:true},{...directStart(),directRequestTest:'yes'}]) {
+    const h=harness();await h.ready;assert.equal((await h.message(payload)).ok,false);assert.equal(h.job(),null);assert.equal(h.calls.some(c=>c.kind==='create'),false);
+  }
+});
+test('direct verification requires capture, one submit, a fresh document, and read-only state verification',async()=>{
+  const h=harness({staleChecks:2});await h.ready;await h.message(directStart());await until(()=>h.job().status==='completed','direct completion');
+  assert.deepEqual(h.phases(),['prepare','capture','verify']);assert.equal(h.calls.filter(c=>c.kind==='direct-submit').length,1);
+  assert.ok(h.calls.find(c=>c.kind==='reload'&&c.bypassCache));assert.equal(h.job().directRequest.verifiedAfterReload,true);
+  assert.equal(h.calls.filter(c=>c.kind==='fresh-document-check').length,3);
+  assert.equal(h.job().items[0].status,'success');assert.equal(h.job().executionMode,'single-direct-verification');
+});
+test('pause or stop after capture disposes the held request without sending it',async()=>{
+  for(const type of ['BLOCK_PAUSE','BLOCK_STOP']) {
+    const capture=gate(),h=harness({direct:async method=>method==='arm'?{active:true}:method==='status'?capture.promise:null});
+    await h.ready;await h.message(directStart());await until(()=>h.calls.some(c=>c.kind==='direct-status'),'capture status');
+    await h.message({type});capture.resolve({captured:true});await until(()=>h.job().current===null,'held cleanup');
+    assert.equal(h.calls.some(c=>c.kind==='direct-submit'),false);assert.ok(h.calls.some(c=>c.kind==='direct-dispose'));
+    assert.equal(h.job().items[0].status,type==='BLOCK_PAUSE'?'pending':'skipped');
+  }
+});
+test('unrecognized capture never dispatches a direct request',async()=>{
+  const h=harness({direct:method=>method==='arm'?{active:true}:method==='status'?{refused:true}:null});
+  await h.ready;await h.message(directStart());await until(()=>h.job().status==='paused'&&h.job().current===null,'refused capture');
+  assert.equal(h.calls.some(c=>c.kind==='direct-submit'),false);assert.equal(h.job().items[0].status,'needs-attention');
+});
+test('HTTP acceptance without reloaded unblock evidence cannot report direct success or replay',async()=>{
+  const h=harness({adapter:async args=>[{result:args.phase==='prepare'?{status:'prepared',confirmationToken:'t'}:args.phase==='capture'?{status:'capture-triggered'}:{status:'unknown'}}]});
+  await h.ready;await h.message(directStart());await until(()=>h.job().status==='paused'&&h.job().current===null,'verification failure');
+  assert.equal(h.job().items[0].status,'unknown');assert.equal(h.job().directRequest.verifiedAfterReload,false);assert.equal(h.calls.filter(c=>c.kind==='direct-submit').length,1);
+});
+test('pause after a direct submission retains unknown status and never dispatches another request',async()=>{
+  const submitted=gate(),h=harness({direct:method=>method==='arm'?{active:true}:method==='status'?{captured:true}:method==='submit'?submitted.promise:null});
+  await h.ready;await h.message(directStart());await until(()=>h.calls.some(c=>c.kind==='direct-submit'),'direct dispatch');
+  await h.message({type:'BLOCK_PAUSE'});submitted.resolve({attempted:true,accepted:true,report:{records:[]}});
+  await until(()=>h.job().current===null,'paused direct result');assert.equal(h.job().items[0].status,'unknown');assert.equal(h.job().directRequest.verifiedAfterReload,false);
+  assert.equal(h.calls.filter(c=>c.kind==='direct-submit').length,1);
 });
 
 test('observer startup failure stops a probe before any UI block action',async()=>{

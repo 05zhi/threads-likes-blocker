@@ -60,9 +60,10 @@
         let observedBody = body instanceof root.URLSearchParams ? body.toString() : body;
         if (root.FormData && body instanceof root.FormData) observedBody = Object.fromEntries([...body.entries()].filter(([, value]) => typeof value === 'string'));
         const item = metadata && record(Core.describeRequest({ ...metadata, base: root.location.href, body: observedBody }), 'xhr');
-        if (item) this.addEventListener('loadend', () => {
+        if (item) track(new Promise(resolve => this.addEventListener('loadend', () => {
           try { response(item, this.status, this.responseType === 'json' ? this.response : !this.responseType || this.responseType === 'text' ? this.responseText : null); } catch {}
-        }, { once: true });
+          finally { resolve(); }
+        }, { once: true })));
       } catch {}
       return originalSend.call(this, body);
     }
@@ -90,7 +91,7 @@
     const state = session;
     state.restore(); root.clearTimeout(state.timer);
     let timer;
-    try { await Promise.race([Promise.allSettled([...state.pending]), new Promise(resolve => { timer = root.setTimeout(resolve, 1500); })]); }
+    try { await Promise.race([Promise.allSettled([...state.pending]), new Promise(resolve => { timer = root.setTimeout(resolve, 12000); })]); }
     finally { root.clearTimeout(timer); state.closed = true; }
     const report = Core.cleanReport(state); state.records = [];
     return report;

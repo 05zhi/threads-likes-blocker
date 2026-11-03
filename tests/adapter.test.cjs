@@ -89,6 +89,19 @@ test('slow menus and dialogs wait for enabled stable controls and do not double-
   assert.ok(f.timings.final-f.timings.option>=5500+900+650);
 });
 
+test('capture phase consumes a prepared token once without claiming the UI means success', async()=>{
+  const f=fixture(); const p=await f.adapter.perform({...f.args,phase:'prepare'});
+  const captured=await f.adapter.perform({...f.args,phase:'capture',confirmationToken:p.confirmationToken});
+  assert.equal(captured.status,'capture-triggered'); assert.equal(f.counts().finalClicks,1);
+  await f.adapter.perform({...f.args,phase:'capture',confirmationToken:p.confirmationToken}); assert.equal(f.counts().finalClicks,1);
+});
+test('verification is read-only and requires the target profile unblock state', async()=>{
+  for(const alreadyBlocked of [true,false]) {
+    const f=fixture({alreadyBlocked}); const result=await f.adapter.perform({...f.args,phase:'verify'});
+    assert.equal(result.status,alreadyBlocked?'success':'unknown'); assert.deepEqual(f.counts(),{menuClicks:0,optionClicks:0,finalClicks:0});
+  }
+});
+
 test('quickly mounted controls still have a settling interval before each action',async()=>{
   const f=fixture(),p=await f.adapter.perform({...f.args,phase:'prepare'});
   await f.adapter.perform({...f.args,phase:'confirm',confirmationToken:p.confirmationToken});
