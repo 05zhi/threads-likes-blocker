@@ -1,6 +1,7 @@
 /* Only an explicit panel command starts a blocking job. */
 importScripts("core.js", "job.js");
 const Core = globalThis.ThreadsProbeCore, Jobs = globalThis.ThreadsBlockJob;
+const BUILD_VERSION = "0.4.2";
 const JOB_KEY = "threadsBlocker.job.v1";
 let job = null, runner = null, serial = Promise.resolve(), workerOwnership = null;
 const openingTabs = new Set();
@@ -13,6 +14,20 @@ function safeOrigin(raw) {
   try { const u = new URL(raw); return u.protocol === "https:" && !u.username && !u.password && !u.port && ["threads.com", "www.threads.com", "threads.net", "www.threads.net"].includes(u.hostname); } catch { return false; }
 }
 function locked(task) { return task && (["running", "paused"].includes(task.status) || task.current != null); }
+function buildIdentity() {
+  return { buildVersion: BUILD_VERSION, runtimeVersion: chrome.runtime.getManifest?.()?.version || "unknown", extensionId: chrome.runtime.id || "" };
+}
+function assertBuildVersion() {
+  const identity = buildIdentity();
+  if (identity.runtimeVersion !== BUILD_VERSION) throw new Error(`背景程式版本 ${BUILD_VERSION} 與套件版本 ${identity.runtimeVersion} 不一致，請重新載入擴充功能。`);
+  return identity;
+}
+function assertPanelVersion(message) {
+  const identity = assertBuildVersion();
+  if (message.panelVersion !== BUILD_VERSION) throw new Error(`面板版本 ${message.panelVersion || "未提供（舊版面板）"} 與背景程式 ${BUILD_VERSION} 不一致，請按修正版工具圖示重新開啟。`);
+  if (!identity.extensionId || message.extensionId !== identity.extensionId) throw new Error("面板來源與目前擴充功能不一致，請按修正版工具圖示重新開啟。");
+  return identity;
+}
 function sameTarget(a, b) { return !!a && !!b && a.username.toLowerCase() === b.username.toLowerCase() && a.postId === b.postId; }
 function sourcePage(raw) {
   return Core.sourcePage(raw);
@@ -171,10 +186,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     await ready;
     if (!Number.isInteger(sender?.tab?.id) || !safeOrigin(sender.tab.url || sender.url)) throw new Error("只接受 Threads 分頁面板指令。");
-    if (message.type === "BLOCK_GET") return { ok: true, job };
+    if (message.type === "BLOCK_GET") return { ok: true, job, ...buildIdentity() };
     if (message.type === "BLOCK_ACTOR") return { ok: true, actorUsername: await readActor(sender.tab.id) };
     return mutate(async () => {
       if (openingTabs.has(sender.tab.id) && ["BLOCK_START", "BLOCK_RESUME"].includes(message.type)) throw new Error("工具面板正在更新，請等新版面板開啟後重新核對名單。");
+      const identity = ["BLOCK_START", "BLOCK_RESUME"].includes(message.type) ? assertPanelVersion(message) : null;
       if (message.type === "BLOCK_START") {
         if (locked(job) || runner) throw new Error("已有工作仍在執行或收尾，請先完成或中止後稍候。");
         if (message.confirmed !== true) throw new Error("請先確認封鎖名單。");
@@ -183,15 +199,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (!target || (!sameTarget(target, source) && !cardBinding)) throw new Error("來源頁面已改變，請重新選擇貼文或留言並確認名單。");
         job = Jobs.createJob({ accounts: message.accounts, target: message.target, includeAuthor: message.includeAuthor, actorUsername: message.actorUsername, sourceTabId: sender.tab.id }, now());
         job.sourcePage = sourcePage(sender.tab.url);
-        job.extensionVersion = chrome.runtime.getManifest?.()?.version || "unknown";
+        job.extensionVersion = identity.runtimeVersion;
+        job.buildVersion = identity.buildVersion; job.runtimeVersion = identity.runtimeVersion;
+        job.extensionId = identity.extensionId; job.clientPanelVersion = message.panelVersion;
         await save(); kick();
       } else {
         if (!job) throw new Error("目前沒有封鎖工作。");
         if (message.type === "BLOCK_PAUSE") job = Jobs.pause(job, now());
         else if (message.type === "BLOCK_STOP") job = Jobs.stop(job, now());
         else if (message.type === "BLOCK_RESUME") {
+          if (typeof message.jobId !== "string" || message.jobId !== job.id) throw new Error("原封鎖工作已變更，請重新核對目前工作後再繼續。");
           if (!sameSource(sender.tab.url, job.sourcePage || job.target.url) || String(message.actorUsername || "").trim().replace(/^@/, "").toLowerCase() !== job.actorUsername.toLowerCase()) throw new Error("請回原來源頁面，並確認目前登入的仍是原帳號後繼續。");
           job = Jobs.resume(job, now()); job.sourceTabId = sender.tab.id;
+          job.buildVersion = identity.buildVersion; job.runtimeVersion = identity.runtimeVersion;
+          job.extensionId = identity.extensionId; job.clientPanelVersion = message.panelVersion;
         } else throw new Error("無法辨識工作指令。");
         await save(); if (job.status === "running") kick();
         if (job.status === "stopped" && !runner) await closeWorker(job);
@@ -222,8 +243,9 @@ chrome.action.onClicked.addListener(async tab => {
   try {
     const url = new URL(tab.url || "");
     if (!safeOrigin(url.href)) { await chrome.action.setBadgeText({ tabId: tab.id, text: "WEB" }); await chrome.action.setTitle({ tabId: tab.id, title: "請先開啟 Threads 網頁，再按此圖示。" }); return; }
+    const runtimeIdentity = assertBuildVersion();
     const expectedSource = sourcePage(url.href), identity = await panelIdentity(tab.id);
-    const version = chrome.runtime.getManifest().version, extensionId = chrome.runtime.id;
+    const version = runtimeIdentity.runtimeVersion, extensionId = runtimeIdentity.extensionId;
     if ((identity.hasProbe || identity.hasHost) && !compatiblePanel(identity, version, extensionId)) await reloadForPanelUpgrade(tab.id, expectedSource);
     await sourceTab(tab.id, expectedSource);
     await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: tabId => { globalThis.__threadsProbeTabId = tabId; }, args: [tab.id] });

@@ -10,7 +10,8 @@ const source=fs.readFileSync(path.join(dir,'background.js'),'utf8');
 const JOB_KEY='threadsBlocker.job.v1';
 const target={url:'https://www.threads.com/@author/post/TEST',kind:'post'};
 const account=username=>({username,profileUrl:`https://www.threads.com/@${username}`});
-const initial=()=>({type:'BLOCK_START',confirmed:true,target,accounts:[account('alice'),account('bob')],actorUsername:'me',includeAuthor:false});
+const panelIdentity={panelVersion:'0.4.2',extensionId:'fixture-extension'};
+const initial=()=>({...panelIdentity,type:'BLOCK_START',confirmed:true,target,accounts:[account('alice'),account('bob')],actorUsername:'me',includeAuthor:false});
 const sender={tab:{id:7,url:target.url},url:target.url};
 const clone=value=>value===undefined?undefined:JSON.parse(JSON.stringify(value));
 const gate=()=>{let resolve,reject;const promise=new Promise((r,j)=>{resolve=r;reject=j;});return{promise,resolve,reject};};
@@ -24,7 +25,7 @@ function harness(options={}) {
   const context=vm.createContext({URL,crypto:require('node:crypto').webcrypto,setTimeout:fn=>setImmediate(fn),clearTimeout:clearImmediate,console,
     chrome:{
       storage:{local:{async get(key){return{[key]:clone(store[key])};},async set(value){Object.assign(store,clone(value));calls.push({kind:'save',job:clone(value[JOB_KEY])});}}},
-      runtime:{onMessage:{addListener(fn){listeners.message=fn;}}},
+      runtime:{id:'fixture-extension',getManifest(){return{version:options.runtimeVersion===undefined?'0.4.2':options.runtimeVersion}},onMessage:{addListener(fn){listeners.message=fn;}}},
       action:{onClicked:{addListener(fn){listeners.action=fn;}},async setBadgeText(){},async setTitle(){}},
       tabs:{
         onRemoved:{addListener(fn){listeners.removed=fn;}},onUpdated:{addListener(fn){listeners.updated=fn;}},
@@ -56,6 +57,38 @@ function harness(options={}) {
   function message(value,from=sender){return new Promise((resolve,reject)=>{const kept=listeners.message(value,clone(from),resolve);if(kept!==true)reject(new Error('Message not handled'));});}
   return{context,calls,tabs,store,listeners,ready,message,job:()=>clone(vm.runInContext('job',context)),phases:()=>calls.filter(c=>c.kind==='adapter').map(c=>c.phase)};
 }
+
+test('GET exposes background build, runtime and extension identity without requiring a current panel',async()=>{
+  const h=harness();await h.ready;
+  const response=await h.message({type:'BLOCK_GET'});
+  assert.equal(response.ok,true);assert.equal(response.job,null);assert.equal(response.buildVersion,'0.4.2');assert.equal(response.runtimeVersion,'0.4.2');assert.equal(response.extensionId,'fixture-extension');
+  assert.equal(h.calls.some(c=>['create','navigate','inject','adapter','save'].includes(c.kind)),false);
+});
+
+test('legacy, stale and wrong-extension panels cannot start or resume blocking',async()=>{
+  const legacy=initial();delete legacy.panelVersion;delete legacy.extensionId;
+  const cases=[legacy,{...initial(),panelVersion:'0.3.0'},{...initial(),extensionId:'another-extension'}];
+  for(const payload of cases){
+    const start=harness();await start.ready;
+    const response=await start.message(payload);assert.equal(response.ok,false);assert.match(response.error,/版本|來源/);assert.equal(start.job(),null);
+    assert.equal(start.calls.some(c=>['create','navigate','inject','adapter','save'].includes(c.kind)),false);
+    const saved=Jobs.pause(Jobs.createJob({...initial(),sourceTabId:7},'2026-11-03T00:00:00.000Z'),'2026-11-03T00:00:01.000Z');
+    const resume=harness({saved});await resume.ready;const before=resume.job();resume.calls.length=0;
+    const resumed=await resume.message({...payload,type:'BLOCK_RESUME',jobId:resume.job().id});assert.equal(resumed.ok,false);assert.match(resumed.error,/版本|來源/);assert.deepEqual(resume.job(),before);
+    assert.equal(resume.calls.some(c=>['create','navigate','inject','adapter','save'].includes(c.kind)),false);
+  }
+});
+
+test('mixed background and runtime builds refuse dispatch while legacy pause, stop and GET stay available',async()=>{
+  const saved=Jobs.pause(Jobs.createJob({...initial(),sourceTabId:7},'2026-11-03T00:00:00.000Z'),'2026-11-03T00:00:01.000Z');
+  const h=harness({runtimeVersion:'0.3.0',saved});await h.ready;h.calls.length=0;
+  const report=await h.message({type:'BLOCK_GET'});assert.equal(report.buildVersion,'0.4.2');assert.equal(report.runtimeVersion,'0.3.0');
+  for(const type of ['BLOCK_START','BLOCK_RESUME']){
+    const response=await h.message({...initial(),type});assert.equal(response.ok,false);assert.match(response.error,/背景程式版本 0\.4\.2 與套件版本 0\.3\.0/);
+  }
+  assert.equal(h.calls.some(c=>['create','navigate','inject','adapter','save'].includes(c.kind)),false);
+  assert.equal((await h.message({type:'BLOCK_PAUSE'})).ok,true);assert.equal((await h.message({type:'BLOCK_STOP'})).ok,true);assert.equal(h.job().status,'stopped');
+});
 
 test('actor detection reads only the sending Threads tab without starting a blocking job',async()=>{
   const h=harness({actorUsername:'me.123'});await h.ready;
@@ -115,7 +148,7 @@ test('feed-bound jobs pause on source navigation and require their original page
   await until(()=>h.phases().includes('prepare'),'feed preparation');
   h.listeners.updated(7,{url:'https://www.threads.com/search'});await until(()=>h.job().status==='paused','feed navigation pause');
   prepare.resolve([{result:{status:'prepared',confirmationToken:'p'}}]);await until(()=>h.job().current===null,'feed deferral');assert.deepEqual(h.phases(),['prepare']);
-  assert.equal((await h.message({type:'BLOCK_RESUME',actorUsername:'me'},{tab:{id:7,url:target.url}})).ok,false);
+  assert.equal((await h.message({...panelIdentity,type:'BLOCK_RESUME',jobId:h.job().id,actorUsername:'me'},{tab:{id:7,url:target.url}})).ok,false);
   await h.message({type:'BLOCK_STOP'},feed);
 });
 
@@ -136,6 +169,7 @@ test('runner prepares before confirming and processes a selected account once',a
   await until(()=>h.job()?.status==='completed','completion');
   assert.deepEqual(h.phases(),['prepare','confirm']);assert.equal(h.job().items[0].status,'success');assert.equal(h.job().items[0].attempts,1);
   assert.equal(h.calls.find(c=>c.kind==='adapter'&&c.phase==='confirm').confirmationToken,'mock-token');
+  for(const key of ['extensionVersion','buildVersion','runtimeVersion','clientPanelVersion'])assert.equal(h.job()[key],'0.4.2');assert.equal(h.job().extensionId,'fixture-extension');
   await until(()=>h.calls.some(c=>c.kind==='remove'),'worker cleanup');assert.equal(h.job().workerTabId,null);
 });
 test('only one job can run or remain paused at a time',async()=>{
@@ -154,10 +188,26 @@ test('pause while prepare is pending prevents confirm and leaves the account pen
   const paused=await h.message({type:'BLOCK_PAUSE'});assert.equal(paused.ok,true);assert.equal(paused.job.status,'paused');assert.equal(paused.job.current,'alice');prepare.resolve([{result:{status:'prepared',confirmationToken:'p'}}]);
   await until(()=>h.job().status==='paused'&&h.job().current===null,'safe deferral');
   assert.deepEqual(h.phases(),['prepare']);assert.equal(h.job().items[0].status,'pending');assert.equal(h.job().items[0].attempts,0);
-  assert.equal((await h.message({type:'BLOCK_RESUME',actorUsername:'someone_else'})).ok,false);
-  assert.equal((await h.message({type:'BLOCK_RESUME',actorUsername:'me'})).ok,true);
+  assert.equal((await h.message({...panelIdentity,type:'BLOCK_RESUME',jobId:h.job().id,actorUsername:'someone_else'})).ok,false);
+  assert.equal((await h.message({...panelIdentity,type:'BLOCK_RESUME',jobId:h.job().id,actorUsername:'me'})).ok,true);
   await until(()=>h.job().status==='completed','resumed completion');assert.deepEqual(h.phases(),['prepare','prepare','confirm']);
 });
+test('a delayed resume for a replaced job cannot resume the new job on the same source and actor',async()=>{
+  const saved=Jobs.pause(Jobs.createJob({...initial(),sourceTabId:7},'2026-11-03T00:00:00.000Z'),'2026-11-03T00:00:01.000Z');
+  const prepare=gate(),h=harness({saved,adapter:args=>args.phase==='prepare'?prepare.promise:Promise.resolve([{result:{status:'success'}}])});await h.ready;
+  const oldJobId=h.job().id;await h.message({type:'BLOCK_STOP'});
+  assert.equal((await h.message({...initial(),accounts:[account('bob')]})).ok,true);const newJobId=h.job().id;assert.notEqual(newJobId,oldJobId);
+  await until(()=>h.phases().includes('prepare'),'replacement job preparation');await h.message({type:'BLOCK_PAUSE'});
+  prepare.resolve([{result:{status:'prepared',confirmationToken:'p'}}]);await until(()=>h.job().status==='paused'&&h.job().current===null,'replacement job deferral');
+  const before=h.job(),callCount=h.calls.length;
+  for(const jobId of [undefined,oldJobId]){
+    const response=await h.message({...panelIdentity,type:'BLOCK_RESUME',actorUsername:'me',jobId});assert.equal(response.ok,false);assert.match(response.error,/工作已變更/);assert.deepEqual(h.job(),before);
+  }
+  assert.equal(h.calls.slice(callCount).some(c=>['create','navigate','inject','adapter','save'].includes(c.kind)),false);assert.deepEqual(h.phases(),['prepare']);
+  assert.equal((await h.message({...panelIdentity,type:'BLOCK_RESUME',actorUsername:'me',jobId:newJobId})).ok,true);
+  await until(()=>h.job().status==='completed','correct replacement job completion');assert.deepEqual(h.phases(),['prepare','prepare','confirm']);
+});
+
 test('stop after confirmation was submitted cancels pending accounts and accepts the in-flight outcome',async()=>{
   const confirm=gate(),h=harness({adapter:args=>args.phase==='prepare'?Promise.resolve([{result:{status:'prepared',confirmationToken:'p'}}]):confirm.promise});await h.ready;await h.message(initial());await until(()=>h.phases().includes('confirm'),'confirm');
   const stopped=await h.message({type:'BLOCK_STOP'});assert.equal(stopped.ok,true);assert.equal(stopped.job.status,'stopped');assert.equal(stopped.job.current,'alice');assert.equal(stopped.job.items[1].status,'cancelled');assert.equal(h.job().status,'stopped');assert.equal(h.job().items[0].status,'unknown');assert.equal(h.job().items[1].status,'cancelled');
@@ -181,7 +231,7 @@ test('recovered saved worker IDs never read, navigate, inject or close an unrela
   const unrelated={id:55,url:'https://example.com/private-work',status:'complete'};
   const h=harness({saved,tabs:[unrelated]});await h.ready;
   assert.equal(h.job().workerTabId,null);assert.equal(h.job().status,'paused');assert.deepEqual(h.tabs.get(55),unrelated);
-  const response=await h.message({type:'BLOCK_RESUME',actorUsername:'me'});assert.equal(response.ok,true);
+  const response=await h.message({...panelIdentity,type:'BLOCK_RESUME',jobId:h.job().id,actorUsername:'me'});assert.equal(response.ok,true);
   await until(()=>h.job().status==='completed','recovered job completion');await until(()=>h.calls.some(c=>c.kind==='remove'),'owned worker cleanup');
   assert.ok(h.calls.some(c=>c.kind==='create'&&c.id!==55));assert.equal(h.calls.some(c=>c.id===55||c.tabId===55),false);assert.deepEqual(h.tabs.get(55),unrelated);
 });
@@ -209,7 +259,7 @@ test('source navigation allows username case changes but pauses on a post ID cas
   h.listeners.updated(7,{url:'https://www.threads.com/@AUTHOR/post/TEST'});await tick();await tick();assert.equal(h.job().status,'running');
   h.listeners.updated(7,{url:'https://www.threads.com/@author/post/test'});await until(()=>h.job().status==='paused','case-sensitive source pause');
   prepare.resolve([{result:{status:'prepared',confirmationToken:'p'}}]);await until(()=>h.job().current===null,'case navigation deferral');assert.deepEqual(h.phases(),['prepare']);assert.equal(h.job().items[0].status,'pending');
-  assert.equal((await h.message({type:'BLOCK_RESUME',actorUsername:'me'},{tab:{id:7,url:'https://www.threads.com/@AUTHOR/post/test'}})).ok,false);
+  assert.equal((await h.message({...panelIdentity,type:'BLOCK_RESUME',jobId:h.job().id,actorUsername:'me'},{tab:{id:7,url:'https://www.threads.com/@AUTHOR/post/test'}})).ok,false);
   await h.message({type:'BLOCK_STOP'});
 });
 test('a closed source tab is rechecked after prepare even when its removed event is missed',async()=>{

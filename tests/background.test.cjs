@@ -9,7 +9,7 @@ const vm = require("node:vm");
 const extensionDir = path.join(__dirname, "../extension");
 const source = fs.readFileSync(path.join(extensionDir, "background.js"), "utf8");
 
-function mockBackground({ failInjection = 0, probe = null, host = null, duplicateHosts = false, failReload = false, reloadStates = [], savedJob = null, reloadGate = null, injectedVersion = '0.4.1', failReloadIdentityReads = 0 } = {}) {
+function mockBackground({ failInjection = 0, probe = null, host = null, duplicateHosts = false, failReload = false, reloadStates = [], savedJob = null, reloadGate = null, injectedVersion = '0.4.2', failReloadIdentityReads = 0, runtimeVersion = '0.4.2' } = {}) {
   const events = [];
   let listener, messageListener, injectionCount = 0, currentTab, reloading = false, reloadIndex = 0, reloadAttempted = false;
   const context = vm.createContext({
@@ -18,7 +18,7 @@ function mockBackground({ failInjection = 0, probe = null, host = null, duplicat
     __threadsLikesProbe: probe,
     chrome: {
       storage: { local: { async get() { return savedJob ? { 'threadsBlocker.job.v1': savedJob } : {}; }, async set(value) { events.push({ type: 'save', value: JSON.parse(JSON.stringify(value)) }); } } },
-      runtime: { id: 'fixture-extension', getManifest() { return { version: '0.4.1' }; }, onMessage: { addListener(fn) { messageListener = fn; } } },
+      runtime: { id: 'fixture-extension', getManifest() { return { version: runtimeVersion }; }, onMessage: { addListener(fn) { messageListener = fn; } } },
       tabs: {
         onRemoved: { addListener() {} }, onUpdated: { addListener() {} },
         async get() {
@@ -88,6 +88,13 @@ test("valid HTTPS Threads origins inject tab identity before bundled scripts", a
   }
 });
 
+test("a mixed background and runtime build refuses toolbar injection before opening or reloading a panel", async () => {
+  const mock = mockBackground({ runtimeVersion: '0.3.0' });
+  await mock.click({ id: 86, url: 'https://www.threads.com/@alice/post/A' });
+  assert.equal(mock.events.some(event => ['inject','reload','save'].includes(event.type)), false);
+  assert.equal(mock.events.at(-2).text, '!');assert.match(mock.events.at(-1).title, /背景程式版本 0\.4\.2 與套件版本 0\.3\.0/);
+});
+
 test("other sites, lookalike hosts, HTTP and browser pages never inject", async () => {
   for (const url of [
     "https://example.com/", "https://threads.com.evil.example/@alice/post/A",
@@ -134,7 +141,7 @@ test("bundled script injection failure is reported and never clears the error ba
 });
 
 test("a compatible panel is reused without reloading or writing a job", async () => {
-  const mock = mockBackground({ probe: { version: '0.4.1', extensionId: 'fixture-extension' }, host: { dataset: { panelVersion: '0.4.1', extensionId: 'fixture-extension' } } });
+  const mock = mockBackground({ probe: { version: '0.4.2', extensionId: 'fixture-extension' }, host: { dataset: { panelVersion: '0.4.2', extensionId: 'fixture-extension' } } });
   await mock.click({ id: 91, url: 'https://www.threads.com/@alice/post/A' });
   assert.equal(mock.events.some(event => ['reload', 'save'].includes(event.type)), false);
   assert.deepEqual(Array.from(mock.events.find(event => event.options?.files).options.files), ['core.js', 'content.js']);
@@ -144,11 +151,11 @@ test("legacy, missing-host and other-copy panels get one cold reload before new 
   for (const panel of [
     { probe: { show() {} }, host: { dataset: {} } },
     { probe: { version: '0.4.0', extensionId: 'fixture-extension' }, host: { dataset: { panelVersion: '0.4.0', extensionId: 'fixture-extension' } } },
-    { probe: { version: '0.4.1', extensionId: 'fixture-extension' }, host: null },
-    { probe: null, host: { dataset: { panelVersion: '0.4.1', extensionId: 'another-extension' } } },
-    { probe: { version: '0.4.1', extensionId: 'another-extension' }, host: { dataset: { panelVersion: '0.4.1', extensionId: 'another-extension' } } },
-    { probe: { version: '0.4.1', extensionId: 'fixture-extension' }, host: { dataset: { panelVersion: '0.3.0', extensionId: 'another-extension' } } },
-    { probe: { version: '0.4.1', extensionId: 'fixture-extension' }, host: { dataset: { panelVersion: '0.4.1', extensionId: 'fixture-extension' } }, duplicateHosts: true }
+    { probe: { version: '0.4.2', extensionId: 'fixture-extension' }, host: null },
+    { probe: null, host: { dataset: { panelVersion: '0.4.2', extensionId: 'another-extension' } } },
+    { probe: { version: '0.4.2', extensionId: 'another-extension' }, host: { dataset: { panelVersion: '0.4.2', extensionId: 'another-extension' } } },
+    { probe: { version: '0.4.2', extensionId: 'fixture-extension' }, host: { dataset: { panelVersion: '0.3.0', extensionId: 'another-extension' } } },
+    { probe: { version: '0.4.2', extensionId: 'fixture-extension' }, host: { dataset: { panelVersion: '0.4.2', extensionId: 'fixture-extension' } }, duplicateHosts: true }
   ]) {
     const mock = mockBackground(panel);
     await mock.click({ id: 92, url: 'https://www.threads.com/@alice/post/A' });

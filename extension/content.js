@@ -1,7 +1,7 @@
 /* Collector reads DOM; explicit user-confirmed blocking runs in the background. */
 (() => {
   "use strict";
-  const EXTENSION_VERSION = "0.4.1";
+  const EXTENSION_VERSION = "0.4.2";
   const EXTENSION_ID = chrome.runtime?.id || "";
   const RUNTIME_VERSION = chrome.runtime?.getManifest?.()?.version || EXTENSION_VERSION;
   if (RUNTIME_VERSION !== EXTENSION_VERSION) throw new Error("套件與面板版本不一致，請重新載入擴充功能。");
@@ -39,7 +39,7 @@
       [hidden]{display:none!important} .step{display:inline-grid;place-items:center;width:23px;height:23px;background:#e9efff;color:#235bc9;border-radius:50%;margin-right:7px;font-size:12px}details{margin-top:12px;border-top:1px solid #edf0f5;padding-top:10px}summary{cursor:pointer;color:#536177;font-size:12px}summary:hover{color:#235bc9}#sourceInfo{background:#f3f6fb;border-radius:8px;padding:10px;margin:0}#actorInfo{font-size:12px;color:#536177}#blockStart{width:100%;padding:11px;font-weight:650}#selectionSummary{font-weight:650}.collection-summary{display:flex;align-items:center;justify-content:space-between;gap:10px}.collection-summary .count{line-height:1.2}.muted-count{font-size:12px;color:#536177}#blockResults{max-height:260px;overflow:auto}#listControls{margin-top:12px}#sourceStep h2,#collectionStep h2,#blockingStep h2{display:flex;align-items:center}
     </style>
     <div class="panel">
-      <header><div><h1>Threads 名單與批次封鎖</h1><div id="buildInfo" class="sub"></div></div><button id="close" title="關閉並暫停">×</button></header>
+      <header><div><h1>Threads 封鎖工具（修正版）</h1><div id="buildInfo" class="sub"></div></div><button id="close" title="關閉並暫停">×</button></header>
       <main>
         <div id="notice" role="status" aria-live="polite"></div>
         <section id="workBanner" class="warning" hidden><strong>有暫停中的封鎖工作</strong><p class="hint">請繼續或中止原工作。要重新收集或重新選名單，請先中止舊工作。</p><button id="blockReturn" class="danger">中止舊工作並回到名單</button></section>
@@ -56,7 +56,7 @@
           <div id="listControls" hidden><details><summary>搜尋與調整選取</summary><label for="search">搜尋帳號</label><input id="search" type="text" placeholder="帳號或名稱"><div class="buttons"><button id="selectAll">全選按讚帳號</button><button id="selectNone">全部取消</button></div></details><div id="accounts"></div><div id="pagination" class="buttons"><button id="prevPage">上一頁</button><span id="pageInfo" class="hint"></span><button id="nextPage">下一頁</button></div></div>
         </section>
         <section id="blockingStep" hidden><h2><span class="step">3</span>確認並封鎖</h2>
-          <p id="actorInfo" aria-live="polite">正在確認登入帳號…</p><button id="refreshActor" hidden>重新確認登入</button><p id="selectionSummary"></p>
+          <p id="actorInfo" aria-live="polite">正在確認登入帳號…</p><button id="refreshActor" hidden>重新確認登入</button><p id="backgroundWarning" class="hint" role="status" hidden></p><p id="selectionSummary"></p>
           <details id="authorOptions"><summary>作者封鎖選項</summary><p id="authorInfo" class="hint">請先收集名單。</p><label class="check"><input id="includeAuthor" type="checkbox"><span>同時封鎖這則內容的作者</span></label></details>
           <label id="blockApproval" class="check"><input id="blockConfirmed" type="checkbox"><span>我已檢查勾選名單，確認要封鎖這些帳號。</span></label>
           <div class="buttons"><button id="blockStart" class="primary">一鍵封鎖已選名單</button><button id="blockPause">暫停封鎖</button><button id="blockResume">繼續封鎖</button><button id="blockStop" class="danger">中止封鎖</button></div>
@@ -76,6 +76,9 @@
   let changeRevision = 0, runningSince = 0, scopeSignature = "", listPage = 0, blockJob = null, blockRequest = false, commandRevision = 0, pauseAfterRequest = false;
   let samplePromise = null, sampleGeneration = null, scanCursor = 0, lastGrowthAt = 0, renderTimer = null, outlineFrame = null, pickedSourcePage = null;
   let detectedActor = "", actorError = "", actorPromise = null, actorChecking = false;
+  let backgroundIdentity = null;
+  function compatibleBackground(value = backgroundIdentity) { return value?.buildVersion === EXTENSION_VERSION && value?.runtimeVersion === RUNTIME_VERSION && value?.extensionId === EXTENSION_ID; }
+  function readBackgroundIdentity(value) { backgroundIdentity = { buildVersion: value?.buildVersion || null, runtimeVersion: value?.runtimeVersion || null, extensionId: value?.extensionId || null }; if (!compatibleBackground()) $("blockConfirmed").checked = false; }
   function freshState() { return { schemaVersion: 1, extensionVersion: EXTENSION_VERSION, mode: "read-only-probe", status: "idle", reason: "", completeness: "unknown", liveCompatibility: "not-verified", target: null, accounts: [], blockSelection: [], diagnostics: [], startedAt: null, updatedAt: null, finishedAt: null, scrollPasses: 0, scopeEvidence: null, limits: { maxAccounts: 10000, maxRunMs: 120000, noGrowthMs: 15000 } }; }
   function notice(text = "") { $("notice").textContent = text; }
   function pageIdentity() { return Core.sourcePage?.(location.href) || `${location.origin}${location.pathname}${location.search}${location.hash}`; }
@@ -175,6 +178,9 @@
   function followOutline() { if (!outlineFrame) outlineFrame = requestAnimationFrame(() => { outlineFrame = null; if (scope?.isConnected && host.style.display !== "none") drawOutline(); }); }
   window.addEventListener("scroll", followOutline, { capture: true, passive: true }); window.addEventListener("resize", followOutline, { passive: true });
   function render() {
+    $("buildInfo").textContent = `${EXTENSION_VERSION} · 套件 ${RUNTIME_VERSION} · 背景 ${backgroundIdentity?.buildVersion || "未確認"}`;
+    $("backgroundWarning").hidden = !backgroundIdentity || compatibleBackground();
+    $("backgroundWarning").textContent = `目前背景 ${backgroundIdentity?.buildVersion || "舊版／未確認"} 與面板 ${EXTENSION_VERSION} 不同。請重新載入「Threads 封鎖工具（修正版）」，再開啟此面板。`;
     $("status").textContent = labels[state.status] || state.status;
     $("reason").textContent = state.reason;
     $("count").textContent = state.accounts.length.toLocaleString();
@@ -221,10 +227,10 @@
     const actor = detectedActor.toLowerCase(), likers = state.accounts.filter(a => selected.has(a.username.toLowerCase()) && a.username.toLowerCase() !== actor);
     const extraAuthor = $("includeAuthor").checked && state.target && state.target.username.toLowerCase() !== actor;
     $("selectionSummary").textContent = `已選 ${likers.length} 個按讚帳號${extraAuthor ? " ＋ 1 位作者" : ""}；登入的自己會排除。`;
-    $("blockStart").disabled = !detectedActor || actorChecking || !state.target || state.target.url !== $("target").value || held || blocking || blockRequest || !(likers.length + (extraAuthor ? 1 : 0));
+    $("blockStart").disabled = !compatibleBackground() || !detectedActor || actorChecking || !state.target || state.target.url !== $("target").value || held || blocking || blockRequest || !(likers.length + (extraAuthor ? 1 : 0));
     $("blockStart").textContent = `一鍵封鎖 ${likers.length + (extraAuthor ? 1 : 0)} 個帳號`;
     $("blockPause").disabled = blockJob?.status !== "running" || blockRequest;
-    $("blockResume").disabled = !detectedActor || actorChecking || blockJob?.status !== "paused" || !!blockJob?.current || blockRequest || !blockJob?.items.some(a => a.status === "pending");
+    $("blockResume").disabled = !compatibleBackground() || !detectedActor || actorChecking || blockJob?.status !== "paused" || !!blockJob?.current || blockRequest || !blockJob?.items.some(a => a.status === "pending");
     $("blockStop").disabled = !blocking || blockRequest;
     $("blockStart").hidden = blocking;
     $("blockApproval").hidden = blocking;
@@ -386,22 +392,32 @@
   }
   $("json").onclick = () => exportFile("json"); $("csv").onclick = () => exportFile("csv");
   $("diagnostics").onclick = () => {
-    const report = { schemaVersion: 1, extensionVersion: EXTENSION_VERSION, panelVersion: EXTENSION_VERSION, runtimeVersion: RUNTIME_VERSION, extensionId: EXTENSION_ID, collector: state.target ? JSON.parse(JSON.stringify(state)) : null, blockingJob: blockJob ? JSON.parse(JSON.stringify(blockJob)) : null, exportedAt: new Date().toISOString() };
+    const report = { schemaVersion: 1, extensionVersion: EXTENSION_VERSION, panelVersion: EXTENSION_VERSION, runtimeVersion: RUNTIME_VERSION, extensionId: EXTENSION_ID, backgroundIdentity, collector: state.target ? JSON.parse(JSON.stringify(state)) : null, blockingJob: blockJob ? JSON.parse(JSON.stringify(blockJob)) : null, exportedAt: new Date().toISOString() };
     const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json;charset=utf-8" }), url = URL.createObjectURL(blob), link = document.createElement("a");
     link.href = url; link.download = `threads-diagnostics-${state.target?.postId || blockJob?.target?.postId || Date.now()}.json`; shadow.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
   async function blockCommand(type, payload = {}) {
     if (!chrome.runtime?.sendMessage) { notice("擴充功能背景連線不可用，請重新載入擴充功能及此頁面。"); return; }
     commandRevision++; blockRequest = true; render();
+    let dispatched = false;
     try {
-      const result = await chrome.runtime.sendMessage({ type, ...payload });
+      if (["BLOCK_START", "BLOCK_RESUME"].includes(type)) {
+        const sourceAtCheck = pageIdentity();
+        const identity = await chrome.runtime.sendMessage({ type: "BLOCK_GET" });
+        readBackgroundIdentity(identity);
+        if (!identity?.ok || !compatibleBackground()) throw new Error(`面板 ${EXTENSION_VERSION} 與背景 ${backgroundIdentity.buildVersion || "舊版／未確認"} 不相容。請開啟「Threads 封鎖工具（修正版）」後重新核對。`);
+        if (pauseAfterRequest || host.style.display === "none" || document.hidden || sourceAtCheck !== pageIdentity()) throw new Error("面板或來源已離開，尚未派送封鎖指令。");
+        if (type === "BLOCK_RESUME" && (!payload.jobId || identity.job?.id !== payload.jobId || identity.job?.status !== "paused")) throw new Error("原工作已變更，尚未繼續封鎖。請重新核對工作紀錄。");
+      }
+      dispatched = true;
+      const result = await chrome.runtime.sendMessage({ type, ...payload, panelVersion: EXTENSION_VERSION, extensionId: EXTENSION_ID });
       if (!result?.ok) throw new Error(result?.error || "背景工作沒有回應。");
       blockJob = result.job || null;
       if (type === "BLOCK_START") $("blockConfirmed").checked = false;
       notice();
     } catch (error) { notice(`封鎖工作：${error.message}`); }
     finally {
-      if ((pauseAfterRequest || host.style.display === "none") && (type === "BLOCK_START" || type === "BLOCK_RESUME" || blockJob?.status === "running")) {
+      if ((pauseAfterRequest || host.style.display === "none") && ((dispatched && (type === "BLOCK_START" || type === "BLOCK_RESUME")) || blockJob?.status === "running")) {
         try { const paused = await chrome.runtime.sendMessage({ type: "BLOCK_PAUSE" }); if (paused?.ok) blockJob = paused.job || null; else notice(paused?.error || "暫停未獲確認，請檢查工作紀錄。"); } catch { notice("暫停未獲確認，請檢查工作紀錄。"); }
       }
       pauseAfterRequest = false; blockRequest = false; render();
@@ -450,7 +466,7 @@
     if (blockRequest || revision !== commandRevision || blockJob?.id !== jobId || blockJob?.status !== "paused") return notice("原工作已變更，尚未繼續封鎖。");
     if (!actorUsername) return notice(actorError);
     if (actorUsername.toLowerCase() !== blockJob?.actorUsername?.toLowerCase()) return notice("目前登入帳號與原工作不同，請切換回原帳號後繼續。");
-    blockCommand("BLOCK_RESUME", { actorUsername });
+    blockCommand("BLOCK_RESUME", { actorUsername, jobId });
   };
   $("blockStop").onclick = () => blockCommand("BLOCK_STOP");
   $("blockReturn").onclick = async () => { await blockCommand("BLOCK_STOP"); if (blockJob?.status === "stopped" && state.status === "paused") finish("ended", "舊封鎖工作已中止，已保留收集名單供檢查。"); };
@@ -470,7 +486,7 @@
     polling = true; const revision = commandRevision;
     try {
       const result = await chrome.runtime.sendMessage({ type: "BLOCK_GET" });
-      if (revision === commandRevision && !blockRequest && result?.ok && JSON.stringify(result.job) !== JSON.stringify(blockJob)) { blockJob = result.job || null; render(); }
+      if (revision === commandRevision && !blockRequest && result?.ok) { readBackgroundIdentity(result); if (JSON.stringify(result.job) !== JSON.stringify(blockJob)) blockJob = result.job || null; render(); }
     } catch { /* Explicit commands report connection failures. */ }
     finally { polling = false; }
   }
