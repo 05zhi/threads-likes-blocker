@@ -40,8 +40,12 @@ function fixture(options={}){
   let dialog=null,confirmButton=null;
   more.onClick=()=>{
     menuClicks++;
-    const menu=new Element('div',{role:options.actionsRole||'menu'},options.actionsText||''),option=new Element('button',{role:'menuitem'},options.unblockMenu?'Unblock':'Block');doc.append(menu.append(option));
-    if(options.actionsRole==='dialog'&&!options.noOtherAction)menu.append(new Element('button',{},'Mute'));
+    const menu=new Element('div',options.roleless?{}:{role:options.actionsRole||'menu'},options.actionsText||''),option=new Element('button',{role:'menuitem'},options.unblockMenu?'Unblock':'Block');doc.append(menu.append(option));
+    if((options.actionsRole==='dialog'||options.roleless)&&!options.noOtherAction)menu.append(new Element('button',{},'Mute'));
+    if(options.zeroSizedMenu)menu.getBoundingClientRect=()=>({left:0,top:0,width:0,height:0});
+    if(options.extraPopup)doc.append(new Element('div',{role:'menu'}).append(new Element('button',{},'Copy link')));
+    if(options.secondBlockGroup)doc.append(new Element('div').append(new Element('button',{},'Block'),new Element('button',{},'Report')));
+    if(options.menuInFeed){menu.remove();article.append(menu);}
     option.onClick=()=>{
       optionClicks++;menu.remove();dialog=new Element('div',{role:'dialog'},options.mention??'Block @victim?');
       confirmButton=new Element('button',{},'Block');dialog.append(confirmButton);
@@ -77,6 +81,27 @@ test('actor must be uniquely readable from profile navigation',()=>{
 });
 test('prepare opens confirmation but never submits the final action',async()=>{
   const f=fixture(),r=await f.adapter.perform({...f.args,phase:'prepare'});assert.equal(r.status,'prepared');assert.equal(typeof r.confirmationToken,'string');assert.deepEqual(f.counts(),{finalClicks:0,menuClicks:1,optionClicks:1});
+});
+
+test('newly opened profile actions do not require a menu/dialog role or a container layout box',async()=>{
+  for(const options of [{roleless:true},{zeroSizedMenu:true},{roleless:true,extraPopup:true},{actionsRole:'dialog',extraPopup:true}]){
+    const f=fixture(options),p=await f.adapter.perform({...f.args,phase:'prepare'});
+    assert.equal(p.status,'prepared',JSON.stringify(options));assert.equal(f.counts().optionClicks,1);assert.equal(f.counts().finalClicks,0);
+    assert.equal((await f.adapter.perform({...f.args,phase:'confirm',confirmationToken:p.confirmationToken})).status,'success');
+  }
+});
+
+test('roleless action discovery rejects final confirmations, feeds and multiple block groups',async()=>{
+  for(const options of [{roleless:true,noOtherAction:true,actionsText:'Block @victim?'},{roleless:true,secondBlockGroup:true},{roleless:true,menuInFeed:true}]){
+    const f=fixture(options),p=await f.adapter.perform({...f.args,phase:'prepare'});
+    assert.equal(p.status,'needs-attention');assert.equal(f.counts().optionClicks,0);assert.equal(f.counts().finalClicks,0);
+  }
+});
+
+test('pre-existing block controls cannot supply the newly opened account menu',async()=>{
+  const f=fixture({roleless:true,noOtherAction:true});
+  f.doc.append(new Element('div').append(new Element('button',{},'Block'),new Element('button',{},'Report')));
+  assert.equal((await f.adapter.perform({...f.args,phase:'prepare'})).status,'needs-attention');assert.equal(f.counts().optionClicks,0);
 });
 test('confirm requires its prepare token and verifies the profile unblock control',async()=>{
   const f=fixture(),p=await f.adapter.perform({...f.args,phase:'prepare'}),r=await f.adapter.perform({...f.args,phase:'confirm',confirmationToken:p.confirmationToken});assert.equal(r.status,'success');assert.equal(f.counts().finalClicks,1);

@@ -1,6 +1,6 @@
 (function (root) {
   "use strict";
-  if (root.ThreadsBlockAdapter?.version === 4) return;
+  if (root.ThreadsBlockAdapter?.version === 5) return;
   const USER = /^[A-Za-z0-9._]{1,30}$/;
   const HOSTS = new Set(["threads.com", "www.threads.com", "threads.net", "www.threads.net"]);
   const PROFILE_LABELS = new Set(["profile", "個人檔案", "个人主页", "個人主頁", "个人资料"]);
@@ -47,7 +47,7 @@
     const delay = env.delay || (ms => new Promise(resolve => setTimeout(resolve, ms)));
     const getStyle = env.getComputedStyle || root.getComputedStyle?.bind(root);
     const href = () => typeof env.href === "function" ? env.href() : (env.location?.href || root.location?.href || "");
-    let prepared = null, stage = "initial";
+    let prepared = null, stage = "initial", menuDiagnostics = null;
     function visible(element) {
       if (!element?.isConnected || element.closest?.("[hidden]")) return false;
       const rect = element.getBoundingClientRect?.();
@@ -60,6 +60,46 @@
     }
     function controls(scope) { return all(scope, "button,[role=\"button\"],[role=\"menuitem\"]").filter(visible); }
     function matchesLabel(element, labels) { return labels.has(low(exactAccessibleText(element, doc))); }
+    function openedActionMenu(before) {
+      const added = controls(doc).filter(element => !before.has(element));
+      const actions = added.filter(element => matchesLabel(element, BLOCK_LABELS) || matchesLabel(element, UNBLOCK_LABELS));
+      const candidates = new Map();
+      const excluded = 'nav,[role="navigation"],article,[role="article"],aside,[role="complementary"],[role="feed"]';
+      for (const action of actions) {
+        for (let scope = action.parentElement, depth = 0; scope && depth < 24; scope = scope.parentElement, depth++) {
+          if (scope === doc || ['BODY', 'HTML'].includes(scope.tagName) || scope.closest?.(excluded)) break;
+          if (all(scope, excluded).length || all(scope, 'a[href]').some(link => /\/@[^/]+\/post\//.test(link.getAttribute('href') || ''))) break;
+          const local = controls(scope), choices = local.filter(element => matchesLabel(element, BLOCK_LABELS) || matchesLabel(element, UNBLOCK_LABELS));
+          if (choices.length !== 1 || choices[0] !== action) break;
+          const role = scope.getAttribute('role');
+          const companion = local.some(element => !before.has(element) && matchesLabel(element, OTHER_ACTION_LABELS));
+          // A real action menu can have an unlabelled/zero-sized portal wrapper.
+          // Bind discovery to controls that appeared after OUR More click. An
+          // unlabelled group or dialog also needs another account action so a
+          // final Block/Cancel confirmation cannot supply the menu step.
+          if (role === 'menu' || companion) {
+            candidates.set(action, { menu: scope, mode: role === 'menu' ? 'semantic-menu' : 'new-action-group' });
+            break;
+          }
+          if (role === 'dialog' || scope.tagName === 'DIALOG') break;
+        }
+      }
+      menuDiagnostics = {
+        newActionControlCount: actions.length,
+        newCompanionControlCount: added.filter(element => matchesLabel(element, OTHER_ACTION_LABELS)).length,
+        candidateCount: candidates.size,
+        mode: candidates.size === 1 ? [...candidates.values()][0].mode : null,
+        // Structural diagnostics only: no HTML, post text, or unrelated names.
+        actionAncestors: actions.slice(0, 3).map(action => {
+          const path = [];
+          for (let node = action.parentElement; node && node !== doc && path.length < 10 && !['BODY', 'HTML'].includes(node.tagName); node = node.parentElement) {
+            path.push({ tag: node.tagName, role: node.getAttribute('role'), hasLayoutBox: visible(node) });
+          }
+          return path;
+        })
+      };
+      return candidates.size === 1 ? [...candidates.values()][0] : null;
+    }
     function readableActorFromNavigation() {
       const actors = new Map();
       for (const link of all(doc, "a[href]")) {
@@ -179,7 +219,7 @@
       const found = USER.test(username || '') ? profileCandidates(username) : { identities: 0, candidates: [] };
       const actor = readableActorFromNavigation(), profile = profileUsernameFromUrl(href());
       const context = found.candidates.length === 1 ? found.candidates[0] : null;
-      return { stage, currentProfileUsername: profile, expectedUsername: username || null, actorUsernameDetected: actor, targetMatches: !!profile && low(profile) === low(username), actorMatches: !!actor && low(actor) === low(actorUsername), mainCount: all(doc, 'main,[role="main"]').length, identityCandidateCount: found.identities, profileHeaderCandidateCount: found.candidates.length, hasProfileMenu: !!context?.menu, menuPopup: context?.menu?.getAttribute('aria-haspopup') || null, hasUnblock: !!unblockControl(context, username), visibleDialogCount: all(doc, '[role="dialog"],dialog[open]').filter(visible).length, barrier: barrier() };
+      return { adapterVersion: 5, stage, currentProfileUsername: profile, expectedUsername: username || null, actorUsernameDetected: actor, targetMatches: !!profile && low(profile) === low(username), actorMatches: !!actor && low(actor) === low(actorUsername), mainCount: all(doc, 'main,[role="main"]').length, identityCandidateCount: found.identities, profileHeaderCandidateCount: found.candidates.length, hasProfileMenu: !!context?.menu, menuPopup: context?.menu?.getAttribute('aria-haspopup') || null, hasUnblock: !!unblockControl(context, username), visibleDialogCount: all(doc, '[role="dialog"],dialog[open]').filter(visible).length, visibleMenuCount: all(doc, '[role="menu"]').filter(visible).length, visibleBlockControlCount: controls(doc).filter(element => matchesLabel(element, BLOCK_LABELS)).length, menuDiscovery: menuDiagnostics ? { ...menuDiagnostics } : null, barrier: barrier() };
     }
     function result(status, username, actorUsername, reason, extra = {}) {
       const diagnostics = inspect({ username, actorUsername });
@@ -197,18 +237,17 @@
         }
         if (current.reason) return result("needs-attention", username, actorUsername, current.reason);
         if (phase === "prepare") {
-          prepared = null;
+          prepared = null; menuDiagnostics = null;
           if (unblockControl(current.context, username)) return result("already-blocked", username, actorUsername, "目標個人檔案已顯示解除封鎖。");
           if (all(doc, '[role="dialog"],dialog[open]').some(visible)) return result("needs-attention", username, actorUsername, "已有其他對話框開啟，請先關閉後重試。");
           stage = 'profile-actions';
+          const beforeMenu = new Set(controls(doc));
           if (!current.context.menu || !safelyClick(current.context.menu)) return result("needs-attention", username, actorUsername, "目標個人檔案選單被遮擋或無法點擊。");
           const opened = await waitFor(() => {
             const issue = guard(username, actorUsername); if (issue.reason) return { reason: issue.reason };
-            const popups = all(doc, '[role="menu"],[role="dialog"],dialog[open]').filter(visible);
-            const outer = popups.filter(node => !popups.some(other => other !== node && other.contains(node)));
-            return outer.length === 1 ? { menu: outer[0] } : null;
+            return openedActionMenu(beforeMenu);
           });
-          if (!opened || opened.reason) return result("needs-attention", username, actorUsername, opened?.reason || "無法辨識唯一的個人檔案選單。");
+          if (!opened || opened.reason) return result("needs-attention", username, actorUsername, opened?.reason || `無法辨識個人檔案動作群（新出現封鎖／解除封鎖按鈕 ${menuDiagnostics?.newActionControlCount || 0}，候選群組 ${menuDiagnostics?.candidateCount || 0}）。`);
           const menuControls = controls(opened.menu);
           if (menuControls.some(element => matchesLabel(element, UNBLOCK_LABELS))) return result("already-blocked", username, actorUsername, "目標選單已顯示解除封鎖。");
           if (opened.menu.getAttribute('role') === 'dialog' && !menuControls.some(element => matchesLabel(element, OTHER_ACTION_LABELS))) return result('needs-attention', username, actorUsername, '無法區分個人檔案動作選單與最終確認視窗，尚未送出封鎖。');
@@ -247,7 +286,7 @@
     return Object.freeze({ perform, readableActorFromNavigation, profileScope, targetDialog, inspect });
   }
   let live;
-  const api = Object.freeze({ version: 4, profileUsernameFromUrl, exactAccessibleText, createAdapter, perform(args) { live ||= createAdapter({ document: root.document, location: root.location }); return live.perform(args); }, inspect(args) { live ||= createAdapter({ document: root.document, location: root.location }); return live.inspect(args); }, readableActorFromNavigation() { live ||= createAdapter({ document: root.document, location: root.location }); return live.readableActorFromNavigation(); } });
+  const api = Object.freeze({ version: 5, profileUsernameFromUrl, exactAccessibleText, createAdapter, perform(args) { live ||= createAdapter({ document: root.document, location: root.location }); return live.perform(args); }, inspect(args) { live ||= createAdapter({ document: root.document, location: root.location }); return live.inspect(args); }, readableActorFromNavigation() { live ||= createAdapter({ document: root.document, location: root.location }); return live.readableActorFromNavigation(); } });
   root.ThreadsBlockAdapter = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

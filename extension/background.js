@@ -1,7 +1,7 @@
 /* Only an explicit panel command starts a blocking job. */
 importScripts("core.js", "job.js");
 const Core = globalThis.ThreadsProbeCore, Jobs = globalThis.ThreadsBlockJob;
-const BUILD_VERSION = "0.4.2";
+const BUILD_VERSION = "0.4.3";
 const JOB_KEY = "threadsBlocker.job.v1";
 let job = null, runner = null, serial = Promise.resolve(), workerOwnership = null;
 const openingTabs = new Set();
