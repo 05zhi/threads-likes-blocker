@@ -65,13 +65,14 @@ async function run() {
       await check(`${name}: column title and feed controls cannot replace a removed header`,async()=>{
         await cdp.eval(`document.querySelector('#profile-header').remove()`);assert.equal((await cdp.eval('fixtureAdapter.inspect(fixtureArgs)')).profileHeaderCandidateCount,0);assert.equal(await cdp.eval('fixtureClicks'),0);
       });
-      for(const mode of ['roleless','zero-box-menu','unrelated-popup']) {
+      for(const mode of ['roleless','zero-box-menu','unrelated-popup','animation-frame']) {
         await check(`${name}: full prepare/confirm handles ${mode} account actions`,async()=>{
           await cdp.eval(`document.open();document.write(${JSON.stringify(html)});document.close();
             globalThis.fixtureAdapter=ThreadsBlockAdapter.createAdapter({document,href:()=>${JSON.stringify('https://www.threads.com/@'+username)},token:()=>'isolated-fixture-token'});
             globalThis.fixtureArgs={username:${JSON.stringify(username)},actorUsername:'owner'};
             globalThis.finalClicks=0;
             fixtureAdapter.profileScope(fixtureArgs.username).menu.addEventListener('click',()=>{
+              const renderActions=()=>{
               const portal=document.createElement('div');portal.style.cssText='position:fixed;top:30px;right:30px;z-index:100;background:white;padding:24px';
               const group=document.createElement('div');
               if(${JSON.stringify(mode)}==='zero-box-menu'){group.setAttribute('role','menu');group.style.display='contents';}
@@ -83,6 +84,8 @@ async function run() {
                 const confirm=document.createElement('button');confirm.textContent='封鎖';dialog.append(confirm);document.body.append(dialog);
                 confirm.addEventListener('click',()=>{finalClicks++;dialog.remove();const unblock=document.createElement('button');unblock.textContent='解除封鎖';fixtureAdapter.profileScope(fixtureArgs.username).scope.append(unblock);});
               });
+              };
+              if(${JSON.stringify(mode)}==='animation-frame')requestAnimationFrame(renderActions);else renderActions();
             });`);
           const prepared=await cdp.eval(`fixtureAdapter.perform({...fixtureArgs,phase:'prepare'}).then(result=>(globalThis.fixturePrepared=result))`);
           assert.equal(prepared.status,'prepared',JSON.stringify(prepared));assert.equal(await cdp.eval('finalClicks'),0);
@@ -92,6 +95,21 @@ async function run() {
         });
       }
     }
+    await check('a real background tab defers without a click, then renders animation frames after activation',async()=>{
+      const original=(await cdp.call('Target.getTargetInfo')).targetInfo.targetId;
+      const other=(await cdp.call('Target.createTarget',{url:'about:blank',background:false})).targetId;
+      try {
+        for(let i=0;i<30&&(await cdp.eval('document.visibilityState'))!=='hidden';i++)await delay(100);
+        assert.equal(await cdp.eval('document.visibilityState'),'hidden');
+        await cdp.eval('globalThis.visibilityFrameRan=false;requestAnimationFrame(()=>{visibilityFrameRan=true});');
+        const deferred=await cdp.eval(`fixtureAdapter.perform({...fixtureArgs,phase:'prepare'})`);
+        assert.equal(deferred.status,'deferred');assert.equal(deferred.evidence.finalActionAttempted,false);
+        await delay(250);assert.equal(await cdp.eval('visibilityFrameRan'),false);
+        await cdp.call('Target.activateTarget',{targetId:original});
+        for(let i=0;i<30&&!(await cdp.eval('visibilityFrameRan'));i++)await delay(100);
+        assert.equal(await cdp.eval('document.visibilityState'),'visible');assert.equal(await cdp.eval('visibilityFrameRan'),true);
+      } finally {await cdp.call('Target.closeTarget',{targetId:other});}
+    });
     const report={testedAt:new Date().toISOString(),browser:(await cdp.call('Browser.getVersion')).product,environment:'isolated headless Chrome; two sanitized real public-profile header hierarchies; all account names and external resources replaced; no live Threads actions',passed:passed.length,tests:passed};
     await fs.writeFile(path.join(scratch,'profile-dom-results.json'),JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));
   } finally {

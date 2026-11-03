@@ -83,6 +83,29 @@ test('prepare opens confirmation but never submits the final action',async()=>{
   const f=fixture(),r=await f.adapter.perform({...f.args,phase:'prepare'});assert.equal(r.status,'prepared');assert.equal(typeof r.confirmationToken,'string');assert.deepEqual(f.counts(),{finalClicks:0,menuClicks:1,optionClicks:1});
 });
 
+test('hidden work pages defer before clicking More instead of reporting a missing menu',async()=>{
+  const f=fixture();f.doc.visibilityState='hidden';
+  const result=await f.adapter.perform({...f.args,phase:'prepare'});
+  assert.equal(result.status,'deferred');assert.equal(result.evidence.finalActionAttempted,false);
+  assert.equal(result.evidence.diagnostics.documentVisibility,'hidden');assert.equal(f.counts().menuClicks,0);
+});
+
+test('hiding during menu opening or before final confirmation never sends the final block',async()=>{
+  const during=fixture(),open=during.more.onClick;
+  during.more.onClick=()=>{open();during.doc.visibilityState='hidden';};
+  assert.equal((await during.adapter.perform({...during.args,phase:'prepare'})).status,'deferred');assert.equal(during.counts().optionClicks,0);
+  const beforeFinal=fixture(),p=await beforeFinal.adapter.perform({...beforeFinal.args,phase:'prepare'});beforeFinal.doc.visibilityState='hidden';
+  const result=await beforeFinal.adapter.perform({...beforeFinal.args,phase:'confirm',confirmationToken:p.confirmationToken});
+  assert.equal(result.status,'deferred');assert.equal(result.evidence.finalActionAttempted,false);assert.equal(beforeFinal.counts().finalClicks,0);
+});
+
+test('hiding after final submission remains unknown and cannot become a retryable deferral',async()=>{
+  const f=fixture(),p=await f.adapter.perform({...f.args,phase:'prepare'}),submit=f.confirmButton.onClick;
+  f.confirmButton.onClick=()=>{submit();f.doc.visibilityState='hidden';};
+  const result=await f.adapter.perform({...f.args,phase:'confirm',confirmationToken:p.confirmationToken});
+  assert.equal(result.status,'unknown');assert.notEqual(result.evidence.finalActionAttempted,false);assert.equal(f.counts().finalClicks,1);
+});
+
 test('newly opened profile actions do not require a menu/dialog role or a container layout box',async()=>{
   for(const options of [{roleless:true},{zeroSizedMenu:true},{roleless:true,extraPopup:true},{actionsRole:'dialog',extraPopup:true}]){
     const f=fixture(options),p=await f.adapter.perform({...f.args,phase:'prepare'});

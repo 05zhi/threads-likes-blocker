@@ -1,6 +1,6 @@
 (function (root) {
   "use strict";
-  if (root.ThreadsBlockAdapter?.version === 5) return;
+  if (root.ThreadsBlockAdapter?.version === 6) return;
   const USER = /^[A-Za-z0-9._]{1,30}$/;
   const HOSTS = new Set(["threads.com", "www.threads.com", "threads.net", "www.threads.net"]);
   const PROFILE_LABELS = new Set(["profile", "個人檔案", "个人主页", "個人主頁", "个人资料"]);
@@ -184,6 +184,7 @@
       if (!USER.test(username || "") || !USER.test(actorUsername || "")) return { code: 'invalid-identity', reason: "目標或登入帳號格式無效。" };
       if (low(username) === low(actorUsername)) return { code: 'self', reason: "不能封鎖目前登入的自己。" };
       if (low(profileUsernameFromUrl(href())) !== low(username)) return { code: 'wrong-url', reason: "目前個人檔案 URL 與佇列目標不一致。" };
+      if (doc.visibilityState === 'hidden') return { code: 'background', reason: "工作分頁不在前景，已暫停；請回來源面板按繼續，工具會切回工作分頁。" };
       const blocked = barrier(); if (blocked) return { code: 'barrier', reason: blocked };
       const actor = readableActorFromNavigation();
       if (!actor) return { code: 'actor-missing', reason: "無法從導覽列確認目前登入帳號。" };
@@ -219,7 +220,7 @@
       const found = USER.test(username || '') ? profileCandidates(username) : { identities: 0, candidates: [] };
       const actor = readableActorFromNavigation(), profile = profileUsernameFromUrl(href());
       const context = found.candidates.length === 1 ? found.candidates[0] : null;
-      return { adapterVersion: 5, stage, currentProfileUsername: profile, expectedUsername: username || null, actorUsernameDetected: actor, targetMatches: !!profile && low(profile) === low(username), actorMatches: !!actor && low(actor) === low(actorUsername), mainCount: all(doc, 'main,[role="main"]').length, identityCandidateCount: found.identities, profileHeaderCandidateCount: found.candidates.length, hasProfileMenu: !!context?.menu, menuPopup: context?.menu?.getAttribute('aria-haspopup') || null, hasUnblock: !!unblockControl(context, username), visibleDialogCount: all(doc, '[role="dialog"],dialog[open]').filter(visible).length, visibleMenuCount: all(doc, '[role="menu"]').filter(visible).length, visibleBlockControlCount: controls(doc).filter(element => matchesLabel(element, BLOCK_LABELS)).length, menuDiscovery: menuDiagnostics ? { ...menuDiagnostics } : null, barrier: barrier() };
+      return { adapterVersion: 6, documentVisibility: doc.visibilityState || "unknown", stage, currentProfileUsername: profile, expectedUsername: username || null, actorUsernameDetected: actor, targetMatches: !!profile && low(profile) === low(username), actorMatches: !!actor && low(actor) === low(actorUsername), mainCount: all(doc, 'main,[role="main"]').length, identityCandidateCount: found.identities, profileHeaderCandidateCount: found.candidates.length, hasProfileMenu: !!context?.menu, menuPopup: context?.menu?.getAttribute('aria-haspopup') || null, hasUnblock: !!unblockControl(context, username), visibleDialogCount: all(doc, '[role="dialog"],dialog[open]').filter(visible).length, visibleMenuCount: all(doc, '[role="menu"]').filter(visible).length, visibleBlockControlCount: controls(doc).filter(element => matchesLabel(element, BLOCK_LABELS)).length, menuDiscovery: menuDiagnostics ? { ...menuDiagnostics } : null, barrier: barrier() };
     }
     function result(status, username, actorUsername, reason, extra = {}) {
       const diagnostics = inspect({ username, actorUsername });
@@ -229,13 +230,14 @@
       const { username, actorUsername, phase, confirmationToken } = args || {};
       if (!["prepare", "confirm"].includes(phase)) return result("needs-attention", username, actorUsername, "未知的執行階段。");
       let finalActionAttempted = false; stage = phase === 'prepare' ? 'profile-ready' : 'confirm-guard';
+      const guardResult = issue => result(issue.code === 'background' ? 'deferred' : 'needs-attention', username, actorUsername, issue.reason, { evidence: { finalActionAttempted: false } });
       try {
         let current = guard(username, actorUsername);
         if (phase === 'prepare' && ['actor-missing', 'profile-missing'].includes(current.code)) {
           stage = 'profile-hydration';
           current = await waitFor(() => { const ready = guard(username, actorUsername); return ['actor-missing', 'profile-missing'].includes(ready.code) ? null : ready; }, 8000) || guard(username, actorUsername);
         }
-        if (current.reason) return result("needs-attention", username, actorUsername, current.reason);
+        if (current.reason) return guardResult(current);
         if (phase === "prepare") {
           prepared = null; menuDiagnostics = null;
           if (unblockControl(current.context, username)) return result("already-blocked", username, actorUsername, "目標個人檔案已顯示解除封鎖。");
@@ -244,22 +246,25 @@
           const beforeMenu = new Set(controls(doc));
           if (!current.context.menu || !safelyClick(current.context.menu)) return result("needs-attention", username, actorUsername, "目標個人檔案選單被遮擋或無法點擊。");
           const opened = await waitFor(() => {
-            const issue = guard(username, actorUsername); if (issue.reason) return { reason: issue.reason };
+            const issue = guard(username, actorUsername); if (issue.reason) return issue;
             return openedActionMenu(beforeMenu);
           });
-          if (!opened || opened.reason) return result("needs-attention", username, actorUsername, opened?.reason || `無法辨識個人檔案動作群（新出現封鎖／解除封鎖按鈕 ${menuDiagnostics?.newActionControlCount || 0}，候選群組 ${menuDiagnostics?.candidateCount || 0}）。`);
+          if (opened?.reason) return guardResult(opened);
+          if (!opened) return result("needs-attention", username, actorUsername, `無法辨識個人檔案動作群（新出現封鎖／解除封鎖按鈕 ${menuDiagnostics?.newActionControlCount || 0}，候選群組 ${menuDiagnostics?.candidateCount || 0}）。`);
           const menuControls = controls(opened.menu);
           if (menuControls.some(element => matchesLabel(element, UNBLOCK_LABELS))) return result("already-blocked", username, actorUsername, "目標選單已顯示解除封鎖。");
           if (opened.menu.getAttribute('role') === 'dialog' && !menuControls.some(element => matchesLabel(element, OTHER_ACTION_LABELS))) return result('needs-attention', username, actorUsername, '無法區分個人檔案動作選單與最終確認視窗，尚未送出封鎖。');
           const blockOptions = menuControls.filter(element => matchesLabel(element, BLOCK_LABELS));
           current = guard(username, actorUsername);
-          if (current.reason || blockOptions.length !== 1 || !safelyClick(blockOptions[0])) return result("needs-attention", username, actorUsername, current.reason || "無法唯一辨識或點擊封鎖選項。");
+          if (current.reason) return guardResult(current);
+          if (blockOptions.length !== 1 || !safelyClick(blockOptions[0])) return result("needs-attention", username, actorUsername, "無法唯一辨識或點擊封鎖選項。");
           stage = 'block-confirmation';
           const dialog = await waitFor(() => {
-            const issue = guard(username, actorUsername); if (issue.reason) return { reason: issue.reason };
+            const issue = guard(username, actorUsername); if (issue.reason) return issue;
             return targetDialog(username, blockOptions[0]);
           });
-          if (!dialog || dialog.reason) return result("needs-attention", username, actorUsername, dialog?.reason || "封鎖確認視窗缺少精確目標帳號，或按鈕不唯一。");
+          if (dialog?.reason) return guardResult(dialog);
+          if (!dialog) return result("needs-attention", username, actorUsername, "封鎖確認視窗缺少精確目標帳號，或按鈕不唯一。");
           const token = env.token ? env.token() : root.crypto.randomUUID();
           prepared = { username: low(username), actor: low(actorUsername), token, dialog: dialog.dialog, scope: current.context.scope, href: href() };
           return result("prepared", username, actorUsername, "已核對目標並開啟確認視窗，尚未送出封鎖。", { confirmationToken: token, evidence: { targetProfileUrl: href(), actorSource: "profile-navigation", targetIdentity: username, confirmationMentionsExactUsername: true } });
@@ -286,7 +291,7 @@
     return Object.freeze({ perform, readableActorFromNavigation, profileScope, targetDialog, inspect });
   }
   let live;
-  const api = Object.freeze({ version: 5, profileUsernameFromUrl, exactAccessibleText, createAdapter, perform(args) { live ||= createAdapter({ document: root.document, location: root.location }); return live.perform(args); }, inspect(args) { live ||= createAdapter({ document: root.document, location: root.location }); return live.inspect(args); }, readableActorFromNavigation() { live ||= createAdapter({ document: root.document, location: root.location }); return live.readableActorFromNavigation(); } });
+  const api = Object.freeze({ version: 6, profileUsernameFromUrl, exactAccessibleText, createAdapter, perform(args) { live ||= createAdapter({ document: root.document, location: root.location }); return live.perform(args); }, inspect(args) { live ||= createAdapter({ document: root.document, location: root.location }); return live.inspect(args); }, readableActorFromNavigation() { live ||= createAdapter({ document: root.document, location: root.location }); return live.readableActorFromNavigation(); } });
   root.ThreadsBlockAdapter = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

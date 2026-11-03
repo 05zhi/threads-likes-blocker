@@ -1,7 +1,7 @@
 /* Only an explicit panel command starts a blocking job. */
 importScripts("core.js", "job.js");
 const Core = globalThis.ThreadsProbeCore, Jobs = globalThis.ThreadsBlockJob;
-const BUILD_VERSION = "0.4.3";
+const BUILD_VERSION = "0.4.4";
 const JOB_KEY = "threadsBlocker.job.v1";
 let job = null, runner = null, serial = Promise.resolve(), workerOwnership = null;
 const openingTabs = new Set();
@@ -140,6 +140,7 @@ async function defer(username) {
 }
 async function run() {
   const taskId = job.id;
+  let firstProfile = true;
   try {
     while (job?.id === taskId && job.status === "running") {
       await mutate(async () => { job = Jobs.nextItem(job, now()); await save(); });
@@ -151,12 +152,24 @@ async function run() {
         let tabId = job.workerTabId;
         if (Number.isInteger(tabId)) {
           if (workerOwnership?.tabId !== tabId || workerOwnership?.jobId !== taskId) tabId = null;
-          else { const tab = await chrome.tabs.get(tabId), profile = Core.profileFromHref(tab.url); if (!profile || !job.items.some(a => a.username.toLowerCase() === profile.username.toLowerCase())) throw new Error("工作分頁已變更，請人工核對。"); }
+          else {
+            const tab = await chrome.tabs.get(tabId), profile = Core.profileFromHref(tab.url);
+            if (!profile || !job.items.some(a => a.username.toLowerCase() === profile.username.toLowerCase())) throw new Error("工作分頁已變更，請人工核對。");
+            if (!firstProfile && tab.active === false) {
+              await mutate(async () => {
+                if (job.id !== taskId || job.current !== username) return;
+                job = job.status === 'stopped' ? Jobs.recordResult(job, username, { status: 'skipped', reason: '中止前尚未送出最後確認。' }, now()) : Jobs.deferPrepared(job, username, '工作分頁已切到背景，請回來源面板按繼續。', now());
+                await save();
+              });
+              break;
+            }
+          }
         }
         if (!Number.isInteger(tabId)) {
-          const tab = await chrome.tabs.create({ url: `https://www.threads.com/@${username}`, active: false });
+          const tab = await chrome.tabs.create({ url: `https://www.threads.com/@${username}`, active: true });
           tabId = tab.id; workerOwnership = { tabId, jobId: taskId }; job.workerTabId = tabId; await save();
-        } else await chrome.tabs.update(tabId, { url: `https://www.threads.com/@${username}` });
+        } else await chrome.tabs.update(tabId, { url: `https://www.threads.com/@${username}`, ...(firstProfile ? { active: true } : {}) });
+        firstProfile = false;
         if (!await waitForProfile(tabId, username, taskId)) { await defer(username); break; }
         await chrome.scripting.executeScript({ target: { tabId }, files: ["core.js", "block-adapter.js"] });
         result = await adapter(tabId, { username, actorUsername, phase: "prepare" });
@@ -170,7 +183,17 @@ async function run() {
           submitted = true;
           result = await adapter(tabId, { username, actorUsername, phase: "confirm", confirmationToken: result.confirmationToken });
         }
-        if (!["success", "already-blocked", "skipped", "failed", "unknown", "needs-attention"].includes(result.status)) result = { status: "needs-attention", reason: "適配器狀態無法辨識，已暫停。" };
+        if (result.status === 'deferred' && result.evidence?.finalActionAttempted === false) {
+          await mutate(async () => {
+            if (job?.id !== taskId || job.current !== username) return;
+            job = job.status === 'stopped'
+              ? Jobs.recordResult(job, username, { status: 'skipped', reason: '中止前尚未送出最後確認。' }, now())
+              : Jobs.deferPrepared(job, username, result.reason, now());
+            job.phase = null; await save();
+          });
+          break;
+        }
+        if (!["success", "already-blocked", "skipped", "failed", "unknown", "needs-attention"].includes(result.status)) result = { status: submitted ? "unknown" : "needs-attention", reason: "適配器狀態無法辨識，已暫停。" };
       } catch (error) { result = { status: submitted ? "unknown" : "needs-attention", reason: `${submitted ? "確認可能已送出，請人工核對" : "尚未送出最後確認"}：${error.message}` }; }
       await mutate(async () => {
         if (job?.id === taskId && job.current === username) { job = Jobs.recordResult(job, username, result, now()); job.phase = null; await save(); }
@@ -228,6 +251,20 @@ chrome.tabs.onRemoved.addListener(tabId => {
     if (tabId === job.workerTabId) { job = Jobs.recover(job, now()); job.workerTabId = null; job.reason = "工作分頁已關閉，未確認的結果不會重試。"; await save(); }
     else if (tabId === job.sourceTabId) { job = Jobs.pause(job, now()); job.reason = "來源分頁已關閉，工作已暫停。"; await save(); }
   })).catch(() => {});
+});
+chrome.tabs.onActivated?.addListener(() => {
+  ready.then(async () => {
+    const taskId = job?.id, workerId = job?.workerTabId;
+    if (job?.status !== 'running' || !Number.isInteger(workerId)) return;
+    const worker = await chrome.tabs.get(workerId);
+    if (worker.active !== false) return;
+    await mutate(async () => {
+      if (job?.id !== taskId || job.workerTabId !== workerId || job.status !== 'running') return;
+      job = Jobs.pause(job, now());
+      job.reason = '已離開工作分頁，封鎖暫停；請回來源面板按繼續。';
+      await save();
+    });
+  }).catch(() => {});
 });
 chrome.tabs.onUpdated.addListener((tabId, changes) => {
   if (!changes.url) return;
