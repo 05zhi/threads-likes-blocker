@@ -3,7 +3,7 @@
  * Raw request material lives only in this closure and is never returned. */
 (function (root) {
   'use strict';
-  if (root.ThreadsDirectRequest?.version === 2) return;
+  if (root.ThreadsDirectRequest?.version === 3) return;
   let state = null;
   const Core = root.ThreadsRequestProbeCore;
   function arm({ username }) {
@@ -35,11 +35,20 @@
       const variables = data && Core.parseJSON(data.get('variables'));
       const actualURL = new URL(url, s.href);
       const keys = ['user_id', 'container_module', 'media_id', 'barcelona_source_quote_post_id', 'barcelona_source_reply_id', 'is_messaging_nua', 'consistent_thread_fbid'];
+      const variableKeys = variables && typeof variables === 'object' && !Array.isArray(variables) ? Object.keys(variables) : [];
+      const extraKeys = variableKeys.filter(key => !keys.includes(key));
+      s.variableFieldCount = variableKeys.length;
+      s.additionalVariableFieldCount = extraKeys.length;
+      // The diagnostic export deliberately omits sensitive/long field names.
+      // Preserve those website-generated fields verbatim in the held payload;
+      // never equate a seven-field sanitized view with a seven-field wire body.
+      // A new visible operation/scope field still needs separate examination.
       s.checks = { active: !s.closed, profileBinding: bound(), singleCandidate: s.count === 1,
         operation: description.operation === 'useTHUserBlockMutation', documentId: !!description.documentId,
         endpoint: actualURL.origin === page.origin && /^\/api\/graphql\/?$/.test(actualURL.pathname) && !actualURL.hash,
         bodyEncoding: validBody, uniqueBodyKeys: !!data && new Set(data.keys()).size === [...data.keys()].length,
-        variableSchema: !!variables && Object.keys(variables).length === keys.length && keys.every(key => Object.hasOwn(variables, key)),
+        variableSchema: !!variables && !Array.isArray(variables) && keys.every(key => Object.hasOwn(variables, key)),
+        additionalFields: extraKeys.every(key => !Core.isReportableKey(key)),
         targetId: !!variables && /^\d{1,30}$/.test(variables.user_id),
         container: !!variables && typeof variables.container_module === 'string' && variables.container_module.length <= 120,
         optionalContext: !!variables && keys.slice(2).every(key => variables[key] === null) };
@@ -83,7 +92,8 @@
     return { active: true };
   }
   function status() { return { captured: !!state?.candidate && !state.closed && !state.refused, refused: state?.refused === true, attempted: state?.attempted === true,
-    diagnostics: { bodyFormat: state?.bodyFormat || 'unknown', candidateCount: state?.count || 0, checks: state?.checks || {}, report: Core.cleanReport({ records: state?.candidates || [] }) } }; }
+    diagnostics: { bodyFormat: state?.bodyFormat || 'unknown', candidateCount: state?.count || 0, variableFieldCount: state?.variableFieldCount || 0,
+      additionalVariableFieldCount: state?.additionalVariableFieldCount || 0, checks: state?.checks || {}, report: Core.cleanReport({ records: state?.candidates || [] }) } }; }
   async function submit() {
     const s = state;
     if (!s || s.closed || s.attempted || s.refused || !s.candidate || !s.bound()) return { attempted: false, report: Core.cleanReport(null) };
@@ -110,5 +120,5 @@
     previous.closed = true; previous.candidate = null; previous.restore?.(); root.clearTimeout(previous.timer);
     for (const pending of previous.held.splice(0)) pending.reject(new Error('Direct request test ended'));
   }
-  root.ThreadsDirectRequest = Object.freeze({ version: 2, arm, status, submit, dispose });
+  root.ThreadsDirectRequest = Object.freeze({ version: 3, arm, status, submit, dispose });
 })(globalThis);

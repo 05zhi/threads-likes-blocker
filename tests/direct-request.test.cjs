@@ -88,3 +88,22 @@ test('held fetch is resolved by the single direct response without a second webs
   const f = fixture(); f.api.arm({ username: 'victim' }); const pending = f.context.fetch(url, { method: 'POST', body: body() });
   assert.equal(f.calls.length, 0); const result = await f.api.submit(); assert.equal(result.accepted, true); assert.equal((await pending).status, 200); assert.equal(f.calls.length, 1); f.api.dispose();
 });
+
+test('extra fields omitted by diagnostic sanitization remain intact in the submitted request', async () => {
+  for (const key of ['session_id', 'relay_provider_'+'x'.repeat(90)]) {
+    const f=fixture(), value={...variables,[key]:'PRIVATE_OPAQUE_VALUE'}, payload=body({variables:JSON.stringify(value)});
+    f.api.arm({username:'victim'}); f.request(payload);
+    const status=f.api.status(); assert.equal(status.captured,true); assert.equal(status.diagnostics.variableFieldCount,8); assert.equal(status.diagnostics.additionalVariableFieldCount,1);
+    assert.equal(status.diagnostics.checks.variableSchema,true); assert.equal(status.diagnostics.checks.additionalFields,true);
+    assert.equal(status.diagnostics.report.records[0].request.variables.length,8); // root plus seven visible fields
+    assert.equal(JSON.stringify(status).includes('PRIVATE_OPAQUE_VALUE'),false);
+    assert.equal((await f.api.submit()).accepted,true); assert.equal(f.calls[0][1].body,payload); assert.equal(f.calls.length,1); f.api.dispose();
+  }
+});
+test('missing required fields and new visible scope fields still refuse submission', async () => {
+  const missing={...variables};delete missing.media_id;
+  for(const value of [missing,{...variables,block_on_instagram:true}]) {
+    const f=fixture();f.api.arm({username:'victim'});f.request(body({variables:JSON.stringify(value)}));
+    assert.equal(f.api.status().refused,true);assert.equal((await f.api.submit()).attempted,false);assert.equal(f.calls.length,0);f.api.dispose();
+  }
+});

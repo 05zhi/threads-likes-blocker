@@ -1,7 +1,7 @@
 /* Only an explicit panel command starts a blocking job. */
 importScripts("core.js", "job.js", "request-probe-core.js");
 const Core = globalThis.ThreadsProbeCore, Jobs = globalThis.ThreadsBlockJob;
-const BUILD_VERSION = "0.4.8";
+const BUILD_VERSION = "0.4.9";
 const JOB_KEY = "threadsBlocker.job.v1";
 let job = null, runner = null, serial = Promise.resolve(), workerOwnership = null;
 const openingTabs = new Set();
@@ -93,11 +93,13 @@ async function directCall(tabId, method, args) {
 }
 function cleanDirectCapture(value) {
   const checks = {};
-  for (const key of ['active', 'profileBinding', 'singleCandidate', 'operation', 'documentId', 'endpoint', 'bodyEncoding', 'uniqueBodyKeys', 'variableSchema', 'targetId', 'container', 'optionalContext']) {
+  for (const key of ['active', 'profileBinding', 'singleCandidate', 'operation', 'documentId', 'endpoint', 'bodyEncoding', 'uniqueBodyKeys', 'variableSchema', 'additionalFields', 'targetId', 'container', 'optionalContext']) {
     if (typeof value?.checks?.[key] === 'boolean') checks[key] = value.checks[key];
   }
   return { bodyFormat: ['urlencoded', 'urlsearchparams', 'formdata', 'unsupported'].includes(value?.bodyFormat) ? value.bodyFormat : 'unknown',
     candidateCount: Number.isInteger(value?.candidateCount) ? Math.min(100, Math.max(0, value.candidateCount)) : 0,
+    variableFieldCount: Number.isInteger(value?.variableFieldCount) ? Math.min(10000, Math.max(0, value.variableFieldCount)) : 0,
+    additionalVariableFieldCount: Number.isInteger(value?.additionalVariableFieldCount) ? Math.min(10000, Math.max(0, value.additionalVariableFieldCount)) : 0,
     checks, report: globalThis.ThreadsRequestProbeCore.cleanReport(value?.report) };
 }
 async function verifyDirectRequest(tabId, taskId, username, actorUsername, confirmationToken) {

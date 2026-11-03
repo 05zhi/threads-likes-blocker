@@ -115,7 +115,7 @@ async function run() {
         assert.equal(await cdp.eval('document.visibilityState'),'visible');assert.equal(await cdp.eval('visibilityFrameRan'),true);
       } finally {await cdp.call('Target.closeTarget',{targetId:other});}
     });
-    for (const format of ['urlencoded','formdata']) await check(`native Chrome XHR holds ${format} and one direct fetch receives unchanged fields`,async()=>{
+    for (const format of ['urlencoded','formdata','opaque-fields']) await check(`native Chrome XHR holds ${format} and one direct fetch receives unchanged fields`,async()=>{
       const core=await fs.readFile(path.join(root,'extension/request-probe-core.js'),'utf8');
       const bridge=await fs.readFile(path.join(root,'extension/direct-request.js'),'utf8');
       await cdp.eval(core);
@@ -125,7 +125,7 @@ async function run() {
           location:{href:'https://www.threads.com/@fixture'},fetch:async(url,init)=>{calls.push({url,body:init.body,credentialMode:init.credentials});return new Response(JSON.stringify({data:{block:{status:'ok'}}}),{status:200});}};
         new Function('globalThis',${JSON.stringify(bridge)})(fakeRoot);
         const api=fakeRoot.ThreadsDirectRequest;api.arm({username:'fixture'});
-        const encoded=new URLSearchParams({fb_api_req_friendly_name:'useTHUserBlockMutation',doc_id:'12345',fb_dtsg:'synthetic-secret',variables:JSON.stringify({user_id:'123456',container_module:'fixture_profile',media_id:null,barcelona_source_quote_post_id:null,barcelona_source_reply_id:null,is_messaging_nua:null,consistent_thread_fbid:null})});
+        const encoded=new URLSearchParams({fb_api_req_friendly_name:'useTHUserBlockMutation',doc_id:'12345',fb_dtsg:'synthetic-secret',variables:JSON.stringify({user_id:'123456',container_module:'fixture_profile',media_id:null,barcelona_source_quote_post_id:null,barcelona_source_reply_id:null,is_messaging_nua:null,consistent_thread_fbid:null,...(${JSON.stringify(format)}==='opaque-fields'?{session_id:'synthetic-secret-value'}:{})})});
         const body=${JSON.stringify(format)}==='formdata'?new FormData():encoded.toString();if(body instanceof FormData)for(const [key,value]of encoded)body.append(key,value);
         const xhr=new XMLHttpRequest();xhr.open('POST','https://www.threads.com/api/graphql');if(typeof body==='string')xhr.setRequestHeader('Content-Type','application/x-www-form-urlencoded');xhr.send(body);
         const before={ready:api.status().captured,calls:calls.length,xhrState:xhr.readyState};

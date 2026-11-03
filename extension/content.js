@@ -1,7 +1,7 @@
 /* Collector reads DOM; explicit user-confirmed blocking runs in the background. */
 (() => {
   "use strict";
-  const EXTENSION_VERSION = "0.4.8";
+  const EXTENSION_VERSION = "0.4.9";
   const EXTENSION_ID = chrome.runtime?.id || "";
   const RUNTIME_VERSION = chrome.runtime?.getManifest?.()?.version || EXTENSION_VERSION;
   if (RUNTIME_VERSION !== EXTENSION_VERSION) throw new Error("套件與面板版本不一致，請重新載入擴充功能。");

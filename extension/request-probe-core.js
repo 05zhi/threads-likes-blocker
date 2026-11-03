@@ -3,6 +3,7 @@
   const HOSTS = new Set(['www.threads.com', 'threads.com', 'www.threads.net', 'threads.net', 'www.instagram.com', 'i.instagram.com']);
   const SECRET = /token|csrf|cookie|authorization|password|secret|session|fb_dtsg|jazoest|^lsd$|^__user$/i;
   const KEY = /^[A-Za-z_][A-Za-z0-9_]{0,79}$|^\d{1,5}$/;
+  const isReportableKey = key => typeof key === 'string' && KEY.test(key) && !SECRET.test(key);
   const ENUMS = new Set(['ok', 'success', 'fail', 'error', 'blocked', 'unblocked', 'block', 'unblock', 'threads', 'instagram', 'both', 'all', 'none', 'threads_only', 'instagram_and_threads', 'text_app']);
   const TYPES = new Set(['object', 'array', 'string', 'number', 'boolean', 'null']);
   const idPath = path => path.slice(-2).some(key => /(?:^id$|_ids?$|^pk$)/i.test(key));
@@ -24,7 +25,7 @@
       if (type === 'string' && ENUMS.has(node.toLowerCase())) row.enum = node.toLowerCase();
       output.push(row);
       if (type === 'object' || type === 'array') for (const [name, child] of Object.entries(node).slice(0, 80)) {
-        if (KEY.test(name) && !SECRET.test(name)) walk(child, [...path, name]);
+        if (isReportableKey(name)) walk(child, [...path, name]);
       }
     }
     walk(value, []); return output;
@@ -83,7 +84,7 @@
     return { schemaVersion: 1, mode: 'observe-only', directRequestVerified: false, scopeVerified: false, credentialsOmitted: true,
       expired: report?.expired === true, records };
   }
-  const api = Object.freeze({ parseJSON, fields, describeRequest, cleanReport });
+  const api = Object.freeze({ parseJSON, fields, describeRequest, cleanReport, isReportableKey });
   root.ThreadsRequestProbeCore = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
