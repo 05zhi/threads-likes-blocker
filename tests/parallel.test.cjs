@@ -6,7 +6,7 @@ const body=()=>new URLSearchParams({fb_api_req_friendly_name:'useTHUserBlockMuta
 const gate=()=>{let resolve;const promise=new Promise(r=>resolve=r);return{resolve,promise};};
 const tick=()=>new Promise(r=>setImmediate(r));
 function fixture(options={}) {
- const calls=[],timers=[],ids={me:'900',alice:'101',bob:'102',carol:'103',dave:'104',eve:'105'};
+ const calls=[],timers=[],ids={me:'900',alice:'101',bob:'102',carol:'103',dave:'104',eve:'105',...Object.fromEntries(Array.from({length:8},(_,i)=>['extra'+i,String(200+i)]))};
  const fetch=async(url,init)=>{
   const call={url,init};calls.push(call);
   if(init.method==='GET') {
@@ -25,7 +25,7 @@ function fixture(options={}) {
   location:{href:'https://www.threads.com/@alice'},document:{visibilityState:'visible'},setTimeout(fn,ms){const t={fn,ms};timers.push(t);return t;},clearTimeout(t){if(t)t.cleared=true;}});
  for(const file of ['parallel-core.js','parallel-request.js','direct-request.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'../extension',file),'utf8'),ctx);
  const api=ctx.ThreadsParallelRequest;
- async function start(){return api.start({candidate:{url:'https://www.threads.com/api/graphql',body:body(),headers:new Headers({'x-fb-lsd':'PRIVATE_HEADER'})},fetch,href:ctx.location.href,accounts:['alice','bob','carol','dave','eve','me'],actorUsername:'me',seedUsername:'alice'});}
+ async function start(){return api.start({candidate:{url:'https://www.threads.com/api/graphql',body:body(),headers:new Headers({'x-fb-lsd':'PRIVATE_HEADER'})},fetch,href:ctx.location.href,accounts:Object.keys(ids),actorUsername:'me',seedUsername:'alice'});}
  return{ctx,api,start,calls,timers,fetch};
 }
 test('route identity binds exact username, consistent profile views and actor',()=>{
@@ -56,18 +56,19 @@ test('template handoff intercepts original XHR once and never exports secret req
  assert.equal(sent.accepted,true);assert.equal(JSON.stringify([result,sent,direct.status()]).includes('PRIVATE'),false);
  direct.dispose();assert.equal(f.api.status().ready,false);
 });
-test('background sends overlap to three without visibility or profile navigation',async()=>{
- const hold=gate(),f=fixture({post:()=>hold.promise});assert.equal((await f.start()).ready,true);
+test('ten background POSTs overlap; eleventh waits and pause preserves all in-flight results',async()=>{
+ const hold=gate(),f=fixture({post:()=>hold.promise});assert.equal((await f.start()).concurrency,10);
  f.ctx.document.visibilityState='hidden';
- for(const username of ['alice','bob','carol','dave'])assert.equal((await f.api.prepare({username})).ready,true);
- const pending=['alice','bob','carol'].map(username=>f.api.submit({username}));
- assert.equal(f.calls.filter(c=>c.init.method==='POST').length,3);assert.equal(f.api.status().active,3);
- assert.equal((await f.api.submit({username:'dave'})).attempted,false);
- assert.equal(f.ctx.location.href,'https://www.threads.com/@alice');
- hold.resolve();assert.ok((await Promise.all(pending)).every(r=>r.accepted));
- assert.equal((await f.api.submit({username:'dave'})).accepted,true);
+ const names=['alice','bob','carol','dave','eve',...Array.from({length:6},(_,i)=>'extra'+i)];
+ for(const username of names)assert.equal((await f.api.prepare({username})).ready,true);
+ const pending=names.slice(0,10).map(username=>f.api.submit({username}));
+ assert.equal(f.calls.filter(c=>c.init.method==='POST').length,10);assert.equal(f.api.status().active,10);
+ assert.equal((await f.api.submit({username:names[10]})).attempted,false);
+ f.api.pause();hold.resolve();assert.ok((await Promise.all(pending)).every(r=>r.accepted));
+ assert.equal((await f.api.submit({username:names[10]})).attempted,false);
+ assert.equal((await f.api.resume()).ready,true);assert.equal((await f.api.submit({username:names[10]})).accepted,true);
  assert.equal((await f.api.submit({username:'alice'})).attempted,false);
- assert.deepEqual(f.calls.filter(c=>c.init.method==='POST').map(c=>c.id),['101','102','103','104']);f.api.dispose();
+ assert.equal(f.ctx.location.href,'https://www.threads.com/@alice');assert.equal(f.calls.filter(c=>c.init.method==='POST').length,11);f.api.dispose();
 });
 test('pause during lookup never sends; explicit resume revalidates actor and preserves eligibility',async()=>{
  const hold=gate(),f=fixture({get:name=>name==='bob'?hold.promise:null});await f.start();
@@ -106,10 +107,10 @@ test('anonymous calibration and wrong captured user IDs are rejected before any 
  const f=fixture({actor:()=>'0'});const result=await f.start();assert.equal(result.ready,false);assert.equal(result.checks.authenticatedActor,false);assert.equal(f.calls.filter(c=>c.init.method==='POST').length,0);
 });
 const newJob=()=>Jobs.createJob({actorUsername:'me',sourceTabId:7,target:{url:'https://www.threads.com/@author/post/TEST'},accounts:['alice','bob','carol','dave'].map(username=>({username,profileUrl:'https://www.threads.com/@'+username}))});
-test('parallel job caps claims at three, accepts out-of-order results, and finishes only after all settle',()=>{
- let job=newJob();for(let i=0;i<4;i++)job=Jobs.claimParallel(job);
+test('parallel job respects a smaller requested limit of three, accepts out-of-order results, and finishes only after all settle',()=>{
+ let job=newJob();for(let i=0;i<4;i++)job=Jobs.claimParallel(job,3);
  assert.deepEqual(job.activeUsernames,['alice','bob','carol']);
- job=Jobs.recordParallel(job,'bob',{status:'success'});job=Jobs.claimParallel(job);
+ job=Jobs.recordParallel(job,'bob',{status:'success'});job=Jobs.claimParallel(job,3);
  assert.deepEqual(job.activeUsernames,['alice','carol','dave']);
  for(const name of ['dave','alice'])job=Jobs.recordParallel(job,name,{status:'success'});
  assert.equal(job.status,'running');job=Jobs.recordParallel(job,'carol',{status:'success'});assert.equal(job.status,'completed');

@@ -1,6 +1,7 @@
 (function(root){
   'use strict';
-  if(root.ThreadsParallelRequest?.version===1)return;
+  if(root.ThreadsParallelRequest?.version===2)return;
+  root.ThreadsParallelRequest?.dispose();
   const Core=root.ThreadsRequestProbeCore,Parallel=root.ThreadsParallelCore;
   let state=null;
   const allowedName=name=>typeof name==='string'&&/^[A-Za-z0-9._]{1,30}$/.test(name);
@@ -38,7 +39,7 @@
       if(!valid(s)||s.epoch!==0)return{ready:false,reason:'calibration-interrupted'};
       s.actorId=actor.actorId;s.actorUserId=actor.userId;
       s.cache.set(seedUsername.toLowerCase(),{...seed,expiresAt:Date.now()+30000});s.enabled=true;
-      return {ready:true,seedUsername,seedUserId:seed.userId,actorMatches:true,identitySource:'profile-route-json',concurrency:3};
+      return {ready:true,seedUsername,seedUserId:seed.userId,actorMatches:true,identitySource:'profile-route-json',concurrency:10};
     } catch(error){dispose();return{ready:false,reason:String(error.message).replace(/[^A-Za-z0-9_-]/g,'').slice(0,80)};}
   }
   async function prepare({username}) {
@@ -58,7 +59,7 @@
   async function submit({username}) {
     const s=state,key=String(username).toLowerCase(),target=s?.cache.get(key);
     if(!valid(s)||!s.enabled)return{attempted:false,deferred:true,reason:'parallel-paused'};
-    if(!s.names.has(key)||s.sent.has(key)||!target||s.sentIds.has(target.userId)||target.expiresAt<Date.now()||s.active>=3)return{attempted:false,reason:'target-not-prepared'};
+    if(!s.names.has(key)||s.sent.has(key)||!target||s.sentIds.has(target.userId)||target.expiresAt<Date.now()||s.active>=10)return{attempted:false,reason:'target-not-prepared'};
     const body=Parallel.forUser(s.candidate.body,target.userId),request=Core.describeRequest({url:s.candidate.url,method:'POST',body:Object.fromEntries(Parallel.copyBody(body))});
     s.sent.add(key);s.sentIds.add(target.userId);s.cache.delete(key);s.active++;
     const capture=Core.cleanReport({records:[{transport:'fetch',request,response:{status:null,json:false,fields:[]}}]});
@@ -75,5 +76,5 @@
   async function resume(){const s=state,epoch=s?.epoch;if(!valid(s))return{ready:false};try{const actor=await profile(s,s.actorUsername);if(!valid(s)||s.epoch!==epoch||!actor.isSelf||actor.actorId!==s.actorId||actor.userId!==s.actorUserId)return{ready:false};s.enabled=true;return{ready:true};}catch{return{ready:false};}}
   function status(){return{ready:valid(state),enabled:state?.enabled===true,active:state?.active||0};}
   function dispose(){if(!state)return;const s=state;state=null;s.closed=true;s.enabled=false;s.cache.clear();s.candidate.body=null;s.candidate.headers=null;root.clearTimeout(s.timer);}
-  root.ThreadsParallelRequest=Object.freeze({version:1,start,prepare,submit,pause,resume,status,dispose});
+  root.ThreadsParallelRequest=Object.freeze({version:2,start,prepare,submit,pause,resume,status,dispose});
 })(globalThis);

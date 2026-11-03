@@ -12,33 +12,34 @@ const source=fs.readFileSync(path.join(dir,'background.js'),'utf8');
 const JOB_KEY='threadsBlocker.job.v1';
 const target={url:'https://www.threads.com/@author/post/TEST',kind:'post'};
 const account=username=>({username,profileUrl:`https://www.threads.com/@${username}`});
-const panelIdentity={panelVersion:'0.6.0',extensionId:'fixture-extension'};
+const panelIdentity={panelVersion:'0.6.1',extensionId:'fixture-extension'};
 const initial=()=>({...panelIdentity,type:'BLOCK_START',confirmed:true,target,accounts:[account('alice'),account('bob')],actorUsername:'me',includeAuthor:false});
 const sender={tab:{id:7,url:target.url},url:target.url};
 const clone=value=>value===undefined?undefined:JSON.parse(JSON.stringify(value));
 const gate=()=>{let resolve,reject;const promise=new Promise((r,j)=>{resolve=r;reject=j;});return{promise,resolve,reject};};
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
-const parallelInitial=()=>({...initial(),parallelBatch:true,accounts:['alice','bob','carol','dave','eve'].map(account)});
+const parallelNames=['alice','bob','carol','dave','eve',...Array.from({length:7},(_,i)=>'extra'+i)];
+const parallelInitial=()=>({...initial(),parallelBatch:true,accounts:parallelNames.map(account)});
 const parallelResult=(method,args)=>method==='prepare'?{ready:true,username:args.username,userId:'123456',capture:directReport()}:method==='submit'?{attempted:true,accepted:true,report:directReport()}:{ready:true};
 async function until(predicate,label){for(let i=0;i<150;i++){if(predicate())return;await tick();}throw new Error('Timed out waiting for '+label);}
 
-test('parallel mode calibrates one profile then dispatches three concurrent targets without navigation',async()=>{
+test('parallel mode calibrates one profile then dispatches ten concurrent targets without navigation',async()=>{
  const hold=gate(),h=harness({parallel:async(method,args)=>{if(method==='submit'&&args.username!=='alice')await hold.promise;return parallelResult(method,args);}});
  await h.ready;assert.equal((await h.message(parallelInitial())).ok,true);
- await until(()=>h.calls.filter(c=>c.kind==='parallel-submit').length===4,'three overlapping submits after seed');
- assert.deepEqual(h.job().activeUsernames,['bob','carol','dave']);assert.equal(h.calls.filter(c=>c.kind==='create').length,1);
+ await until(()=>h.calls.filter(c=>c.kind==='parallel-submit').length===11,'ten overlapping submits after seed');
+ assert.deepEqual(h.job().activeUsernames,parallelNames.slice(1,11));assert.equal(h.calls.filter(c=>c.kind==='create').length,1);
  assert.equal(h.calls.filter(c=>c.kind==='navigate'&&c.url).length,0);
  assert.deepEqual(h.calls.filter(c=>c.kind==='navigate').map(c=>c.id),[7]);
  h.tabs.get(100).active=false;h.listeners.activated({tabId:7});await tick();await tick();assert.equal(h.job().status,'running');
  hold.resolve();await until(()=>h.job().status==='completed','parallel completion');
- assert.deepEqual(h.calls.filter(c=>c.kind==='parallel-submit').map(c=>c.username),['alice','bob','carol','dave','eve']);
+ assert.deepEqual(h.calls.filter(c=>c.kind==='parallel-submit').map(c=>c.username),parallelNames);
  assert.equal(h.job().items.every(r=>r.status==='success'),true);assert.deepEqual(h.phases(),['prepare','capture']);
 });
 test('parallel pause stops dispatch, retains late results and resumes without another profile page',async()=>{
  const hold=gate(),h=harness({parallel:async(method,args)=>{if(method==='submit'&&args.username!=='alice')await hold.promise;return parallelResult(method,args);}});
- await h.ready;await h.message(parallelInitial());await until(()=>h.calls.filter(c=>c.kind==='parallel-submit').length===4,'active pool');
+ await h.ready;await h.message(parallelInitial());await until(()=>h.calls.filter(c=>c.kind==='parallel-submit').length===11,'active pool');
  await h.message({type:'BLOCK_PAUSE'});hold.resolve();await until(()=>h.job().current===null,'pool settles');
- assert.equal(h.job().status,'paused');assert.equal(h.job().items[4].status,'pending');assert.equal(h.job().items.slice(0,4).every(r=>r.status==='success'),true);
+ assert.equal(h.job().status,'paused');assert.equal(h.job().items[11].status,'pending');assert.equal(h.job().items.slice(0,11).every(r=>r.status==='success'),true);
  await until(()=>vm.runInContext('runner === null',h.context),'runner finishes');
  assert.equal((await h.message({...panelIdentity,type:'BLOCK_RESUME',jobId:h.job().id,actorUsername:'me'})).ok,true);
  await until(()=>h.job().status==='completed','resumed pool');assert.equal(h.calls.filter(c=>c.kind==='create').length,1);assert.equal(h.calls.filter(c=>c.kind==='direct-handoffParallel').length,1);
@@ -48,12 +49,21 @@ test('parallel stop cancels pending and prepared accounts but records already su
  await h.ready;await h.message(parallelInitial());await until(()=>h.calls.some(c=>c.kind==='parallel-prepare'&&c.username==='dave'),'pool prepared');
  await h.message({type:'BLOCK_STOP'});hold.resolve();await until(()=>h.job().current===null,'stopped pool settles');
  assert.equal(h.job().status,'stopped');assert.deepEqual(h.calls.filter(c=>c.kind==='parallel-submit').map(c=>c.username),['alice','bob']);
- assert.deepEqual(h.job().items.map(r=>r.status),['success','success','cancelled','cancelled','cancelled']);
+ assert.deepEqual(h.job().items.map(r=>r.status),['success','success',...Array(10).fill('cancelled')]);
 });
 test('parallel seed failure prevents pool dispatch and never falls back to per-user pages',async()=>{
  const h=harness({parallel:(method,args)=>method==='submit'?{attempted:true,accepted:true,report:directReport('999999')}:parallelResult(method,args)});
  await h.ready;await h.message(parallelInitial());await until(()=>h.job().status==='paused','seed response rejected');
  assert.equal(h.job().items[0].status,'unknown');assert.equal(h.calls.filter(c=>c.kind==='parallel-submit').length,1);assert.equal(h.calls.filter(c=>c.kind==='create').length,1);
+});
+test('stopping ten in-flight targets preserves their results and never dispatches the waiting eleventh',async()=>{
+ const hold=gate(),h=harness({parallel:async(method,args)=>{if(method==='submit'&&args.username!=='alice')await hold.promise;return parallelResult(method,args);}});
+ await h.ready;await h.message(parallelInitial());await until(()=>h.calls.filter(c=>c.kind==='parallel-submit').length===11,'full ten-target pool');
+ assert.equal(h.job().concurrency,10);await h.message({type:'BLOCK_STOP'});
+ assert.equal(h.job().items.filter(r=>r.status==='unknown').length,10);assert.equal(h.job().items[11].status,'cancelled');
+ hold.resolve();await until(()=>h.job().current===null,'all ten results');
+ assert.equal(h.job().status,'stopped');assert.equal(h.job().items.filter(r=>r.status==='success').length,11);
+ assert.equal(h.calls.filter(c=>c.kind==='parallel-submit').length,11);
 });
 test('parallel calibration failure and already-blocked seed stop without blocking other accounts',async()=>{
  for(const already of [true,false]) {
@@ -76,7 +86,7 @@ function harness(options={}) {
   const context=vm.createContext({URL,crypto:require('node:crypto').webcrypto,setTimeout:(fn,ms)=>{calls.push({kind:'wait',ms});return setImmediate(fn);},clearTimeout:clearImmediate,console,
     chrome:{
       storage:{local:{async get(key){return{[key]:clone(store[key])};},async set(value){Object.assign(store,clone(value));calls.push({kind:'save',job:clone(value[JOB_KEY])});}}},
-      runtime:{id:'fixture-extension',getManifest(){return{version:options.runtimeVersion===undefined?'0.6.0':options.runtimeVersion}},onMessage:{addListener(fn){listeners.message=fn;}}},
+      runtime:{id:'fixture-extension',getManifest(){return{version:options.runtimeVersion===undefined?'0.6.1':options.runtimeVersion}},onMessage:{addListener(fn){listeners.message=fn;}}},
       action:{onClicked:{addListener(fn){listeners.action=fn;}},async setBadgeText(){},async setTitle(){}},
       tabs:{
         onRemoved:{addListener(fn){listeners.removed=fn;}},onUpdated:{addListener(fn){listeners.updated=fn;}},onActivated:{addListener(fn){listeners.activated=fn;}},
@@ -134,7 +144,7 @@ function harness(options={}) {
 test('GET exposes background build, runtime and extension identity without requiring a current panel',async()=>{
   const h=harness();await h.ready;
   const response=await h.message({type:'BLOCK_GET'});
-  assert.equal(response.ok,true);assert.equal(response.job,null);assert.equal(response.buildVersion,'0.6.0');assert.equal(response.runtimeVersion,'0.6.0');assert.equal(response.extensionId,'fixture-extension');
+  assert.equal(response.ok,true);assert.equal(response.job,null);assert.equal(response.buildVersion,'0.6.1');assert.equal(response.runtimeVersion,'0.6.1');assert.equal(response.extensionId,'fixture-extension');
   assert.equal(h.calls.some(c=>['create','navigate','inject','adapter','save'].includes(c.kind)),false);
 });
 
@@ -155,9 +165,9 @@ test('legacy, stale and wrong-extension panels cannot start or resume blocking',
 test('mixed background and runtime builds refuse dispatch while legacy pause, stop and GET stay available',async()=>{
   const saved=Jobs.pause(Jobs.createJob({...initial(),sourceTabId:7},'2026-11-03T00:00:00.000Z'),'2026-11-03T00:00:01.000Z');
   const h=harness({runtimeVersion:'0.3.0',saved});await h.ready;h.calls.length=0;
-  const report=await h.message({type:'BLOCK_GET'});assert.equal(report.buildVersion,'0.6.0');assert.equal(report.runtimeVersion,'0.3.0');
+  const report=await h.message({type:'BLOCK_GET'});assert.equal(report.buildVersion,'0.6.1');assert.equal(report.runtimeVersion,'0.3.0');
   for(const type of ['BLOCK_START','BLOCK_RESUME']){
-    const response=await h.message({...initial(),type});assert.equal(response.ok,false);assert.match(response.error,/背景程式版本 0\.6\.0 與套件版本 0\.3\.0/);
+    const response=await h.message({...initial(),type});assert.equal(response.ok,false);assert.match(response.error,/背景程式版本 0\.6\.1 與套件版本 0\.3\.0/);
   }
   assert.equal(h.calls.some(c=>['create','navigate','inject','adapter','save'].includes(c.kind)),false);
   assert.equal((await h.message({type:'BLOCK_PAUSE'})).ok,true);assert.equal((await h.message({type:'BLOCK_STOP'})).ok,true);assert.equal(h.job().status,'stopped');
@@ -242,7 +252,7 @@ test('runner prepares before confirming and processes a selected account once',a
   await until(()=>h.job()?.status==='completed','completion');
   assert.deepEqual(h.phases(),['prepare','confirm']);assert.equal(h.job().items[0].status,'success');assert.equal(h.job().items[0].attempts,1);
   assert.equal(h.calls.find(c=>c.kind==='adapter'&&c.phase==='confirm').confirmationToken,'mock-token');
-  for(const key of ['extensionVersion','buildVersion','runtimeVersion','clientPanelVersion'])assert.equal(h.job()[key],'0.6.0');assert.equal(h.job().extensionId,'fixture-extension');
+  for(const key of ['extensionVersion','buildVersion','runtimeVersion','clientPanelVersion'])assert.equal(h.job()[key],'0.6.1');assert.equal(h.job().extensionId,'fixture-extension');
   await until(()=>h.calls.some(c=>c.kind==='remove'),'worker cleanup');assert.equal(h.job().workerTabId,null);
 });
 test('only one job can run or remain paused at a time',async()=>{
