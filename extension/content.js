@@ -1,7 +1,7 @@
 /* Collector reads DOM; explicit user-confirmed blocking runs in the background. */
 (() => {
   "use strict";
-  const EXTENSION_VERSION = "0.6.2";
+  const EXTENSION_VERSION = "0.6.3";
   const EXTENSION_ID = chrome.runtime?.id || "";
   const RUNTIME_VERSION = chrome.runtime?.getManifest?.()?.version || EXTENSION_VERSION;
   if (RUNTIME_VERSION !== EXTENSION_VERSION) throw new Error("套件與面板版本不一致，請重新載入擴充功能。");
@@ -36,10 +36,11 @@
       #status{font-weight:650}#reason,#progress{font-size:12px;color:#536177}#blockStatus,#sourceInfo{white-space:pre-line;overflow-wrap:anywhere} .count{font-size:30px;font-weight:750;color:#235bc9}#accounts{max-height:300px;overflow:auto;margin-top:10px}
       .account{padding:7px 0;border-top:1px solid #edf0f5;overflow-wrap:anywhere}.account a{color:#204fad;text-decoration:none}.account small{display:block}footer{padding:10px 16px;border-top:1px solid #dce2ec;background:white;font-size:11px;color:#536177}
       #notice{padding:9px 12px;background:#fff1cf;border-radius:6px;margin-bottom:12px;white-space:pre-wrap;font-size:12px}#notice:empty{display:none}
+      button:focus-visible,input:focus-visible,summary:focus-visible{outline:3px solid #235bc9;outline-offset:3px}.check{padding:10px;border:2px solid transparent;border-radius:8px}.check.required-error{border-color:#bb3324;background:#fff1eb}.field-error{color:#9b2417;font-size:13px;font-weight:650;margin:6px 0 12px}.check input{width:18px;height:18px;accent-color:#235bc9}#jobSummary{padding:12px;background:#eef3ff;border-radius:8px;white-space:pre-line}#jobDetails{margin-bottom:12px}#blockResults:empty{display:none}
       [hidden]{display:none!important} .step{display:inline-grid;place-items:center;width:23px;height:23px;background:#e9efff;color:#235bc9;border-radius:50%;margin-right:7px;font-size:12px}details{margin-top:12px;border-top:1px solid #edf0f5;padding-top:10px}summary{cursor:pointer;color:#536177;font-size:12px}summary:hover{color:#235bc9}#sourceInfo{background:#f3f6fb;border-radius:8px;padding:10px;margin:0}#actorInfo{font-size:12px;color:#536177}#blockStart{width:100%;padding:11px;font-weight:650}#selectionSummary{font-weight:650}.collection-summary{display:flex;align-items:center;justify-content:space-between;gap:10px}.collection-summary .count{line-height:1.2}.muted-count{font-size:12px;color:#536177}#blockResults{max-height:260px;overflow:auto}#listControls{margin-top:12px}#sourceStep h2,#collectionStep h2,#blockingStep h2{display:flex;align-items:center}
     </style>
     <div class="panel">
-      <header><div><h1>Threads 封鎖工具（修正版）</h1><div id="buildInfo" class="sub"></div></div><button id="close" title="關閉並暫停">×</button></header>
+      <header><div><h1>Threads 名單封鎖</h1><div id="buildInfo" class="sub"></div></div><button id="close" aria-label="關閉面板並暫停" title="關閉並暫停">×</button></header>
       <main>
         <div id="notice" role="status" aria-live="polite"></div>
         <section id="workBanner" class="warning" hidden><strong>有暫停中的封鎖工作</strong><p class="hint">請繼續或中止原工作。要重新收集或重新選名單，請先中止舊工作。</p><button id="blockReturn" class="danger">中止舊工作並回到名單</button></section>
@@ -48,7 +49,7 @@
           <p class="hint">在 Threads 開啟這則內容的「查看動態 → 按讚」，再選擇名單區域。</p>
           <div class="buttons"><button id="pick">選擇名單區域</button><button id="cancelPick" hidden>取消選擇</button></div>
           <p id="scopeInfo" class="hint">尚未選擇</p>
-          <label class="check"><input id="scopeConfirmed" type="checkbox"><span>已核對目標，橘框只包含這則內容的按讚名單。</span></label>
+          <label class="check"><input id="scopeConfirmed" type="checkbox" aria-describedby="scopeConfirmedError"><span>已核對目標，橘框只包含這則內容的按讚名單。</span></label><div id="scopeConfirmedError" class="field-error" role="alert" hidden></div>
         </section>
         <section id="collectionStep"><h2><span class="step">2</span>收集並檢查名單</h2><div class="collection-summary"><div><div id="status" aria-live="polite">尚未開始</div><div id="progress" aria-live="polite"></div></div><div><span id="count" class="count">0</span><div class="muted-count">個按讚帳號</div></div></div><div id="reason"></div>
           <div class="buttons"><button id="start" class="primary">開始新收集</button><button id="pause" disabled>暫停</button><button id="resume" disabled>繼續</button><button id="review" disabled>結束並檢查名單</button><button id="stop" class="danger" disabled>中止收集</button></div>
@@ -58,15 +59,15 @@
         <section id="blockingStep" hidden><h2><span class="step">3</span>確認並封鎖</h2>
           <p id="actorInfo" aria-live="polite">正在確認登入帳號…</p><button id="refreshActor" hidden>重新確認登入</button><p id="backgroundWarning" class="hint" role="status" hidden></p><p id="selectionSummary"></p>
           <details id="authorOptions"><summary>作者封鎖選項</summary><p id="authorInfo" class="hint">請先收集名單。</p><label class="check"><input id="includeAuthor" type="checkbox"><span>同時封鎖這則內容的作者</span></label></details>
-          <label id="blockApproval" class="check"><input id="blockConfirmed" type="checkbox"><span>我已檢查勾選名單，確認要封鎖這些帳號。</span></label>
+          <label id="blockApproval" class="check"><input id="blockConfirmed" type="checkbox" aria-describedby="blockConfirmedError"><span>我已檢查勾選名單，確認要封鎖這些帳號。</span></label><div id="blockConfirmedError" class="field-error" role="alert" hidden></div>
           <div class="buttons"><button id="blockStart" class="primary">一鍵封鎖已選名單</button><button id="blockPause">暫停封鎖</button><button id="blockResume">繼續封鎖</button><button id="blockStop" class="danger">中止封鎖</button></div>
-          <div id="blockStatus" role="status" aria-live="polite">尚無封鎖工作</div><div id="blockResults"></div>
+          <div id="jobSummary" role="status" aria-live="polite" hidden></div><details id="jobDetails" hidden><summary>查看逐筆結果與工作詳情</summary><div id="blockStatus">尚無封鎖工作</div><div id="blockResults"></div></details>
           <p class="hint">首次會開一個工作分頁準備請求，完成後自動回到此處，依已確認名單數量，在背景同時處理其餘所有帳號。暫停／中止會停止派發，已送出的請求仍可能完成。</p>
-          <details id="requestProbeTools"><summary>單一帳號診斷</summary><p class="hint">一般「一鍵封鎖」使用背景並行請求。以下工具只接受一個已確認帳號，用於額外核對或匯出網站請求；仍會真的封鎖此人。</p><button id="directStart">驗證直接請求並封鎖此帳號</button><button id="probeStart">僅用網頁封鎖並記錄請求</button><p id="probeStatus" class="hint" role="status"></p></details>
+
           <p class="hint">會更改 Threads 帳號狀態。暫停／中止不撤銷已完成封鎖；結果不明不會自動重試。</p>
         </section>
-        <details id="tools"><summary>匯出與本機紀錄</summary><div class="buttons"><button id="diagnostics">匯出完整診斷 JSON</button><button id="json">匯出名單 JSON</button><button id="csv">匯出 CSV</button><button id="blockExport">匯出封鎖紀錄</button><button id="clear" class="danger">清除名單</button></div></details>
-      </main><footer>本機紀錄 · 不讀取密碼或 Cookie · 使用 Threads 網頁操作封鎖</footer>
+        <details id="tools"><summary>匯出、紀錄與進階工具</summary><div class="buttons"><button id="diagnostics">匯出完整診斷 JSON</button><button id="json">匯出名單 JSON</button><button id="csv">匯出 CSV</button><button id="blockExport">匯出封鎖紀錄</button><button id="clear" class="danger">清除名單</button></div><details id="requestProbeTools"><summary>進階：單一帳號測試</summary><p class="hint">一般「一鍵封鎖」使用背景並行請求。以下工具只接受一個已確認帳號，用於額外核對或匯出網站請求；仍會真的封鎖此人。</p><button id="directStart">驗證直接請求並封鎖此帳號</button><button id="probeStart">僅用網頁封鎖並記錄請求</button><p id="probeStatus" class="hint" role="status"></p></details></details>
+      </main><footer>名單與操作紀錄僅保存在此瀏覽器</footer>
     </div>`;
   document.documentElement.appendChild(host);
   const $ = (id) => shadow.getElementById(id);
@@ -83,11 +84,26 @@
   function readBackgroundIdentity(value) { backgroundIdentity = { buildVersion: value?.buildVersion || null, runtimeVersion: value?.runtimeVersion || null, extensionId: value?.extensionId || null }; if (!compatibleBackground()) $("blockConfirmed").checked = false; }
   function freshState() { return { schemaVersion: 1, extensionVersion: EXTENSION_VERSION, mode: "read-only-probe", status: "idle", reason: "", completeness: "unknown", liveCompatibility: "not-verified", target: null, accounts: [], blockSelection: [], diagnostics: [], startedAt: null, updatedAt: null, finishedAt: null, scrollPasses: 0, scopeEvidence: null, limits: { maxAccounts: 10000, maxRunMs: 120000, noGrowthMs: 15000 } }; }
   function notice(text = "") { $("notice").textContent = text; }
+  function clearRequired(id) {
+    const input = $(id); input.removeAttribute("aria-invalid"); input.closest('label').classList.remove('required-error');
+    $(id + 'Error').hidden = true; $(id + 'Error').textContent = '';
+  }
+  function requireConfirmation(id, message) {
+    const input = $(id);
+    if (input.checked) { clearRequired(id); return true; }
+    input.setAttribute('aria-invalid', 'true'); input.closest('label').classList.add('required-error');
+    $(id + 'Error').textContent = message; $(id + 'Error').hidden = false;
+    notice(message); input.closest('label').scrollIntoView({block:'center',behavior:'auto'}); input.focus({preventScroll:true});
+    return false;
+  }
+  for (const id of ['scopeConfirmed','blockConfirmed']) $(id).addEventListener('change', () => {
+    if ($(id).checked) { clearRequired(id); notice(); }
+  });
   function pageIdentity() { return Core.sourcePage?.(location.href) || `${location.origin}${location.pathname}${location.search}${location.hash}`; }
   function detectedTarget() {
     return Core.canonicalTarget(location.href) || Core.canonicalTarget(document.querySelector('link[rel="canonical"]')?.getAttribute("href"), location.href);
   }
-  function resetApprovals() { $("scopeConfirmed").checked = false; $("includeAuthor").checked = false; $("blockConfirmed").checked = false; }
+  function resetApprovals() { clearRequired("scopeConfirmed"); clearRequired("blockConfirmed"); $("scopeConfirmed").checked = false; $("includeAuthor").checked = false; $("blockConfirmed").checked = false; }
   function setDetectedTarget(target, summary = "", picked = false) {
     const changed = $("target").value !== (target?.url || "");
     $("target").value = target?.url || "";
@@ -180,7 +196,8 @@
   function followOutline() { if (!outlineFrame) outlineFrame = requestAnimationFrame(() => { outlineFrame = null; if (scope?.isConnected && host.style.display !== "none") drawOutline(); }); }
   window.addEventListener("scroll", followOutline, { capture: true, passive: true }); window.addEventListener("resize", followOutline, { passive: true });
   function render() {
-    $("buildInfo").textContent = `${EXTENSION_VERSION} · 套件 ${RUNTIME_VERSION} · 背景 ${backgroundIdentity?.buildVersion || "未確認"}`;
+    $("buildInfo").textContent = `v${EXTENSION_VERSION}`;
+    $("buildInfo").title = `面板 ${EXTENSION_VERSION} · 套件 ${RUNTIME_VERSION} · 背景 ${backgroundIdentity?.buildVersion || "未確認"} · ID ${EXTENSION_ID}`;
     $("backgroundWarning").hidden = !backgroundIdentity || compatibleBackground();
     $("backgroundWarning").textContent = `目前背景 ${backgroundIdentity?.buildVersion || "舊版／未確認"} 與面板 ${EXTENSION_VERSION} 不同。請重新載入「Threads 封鎖工具（修正版）」，再開啟此面板。`;
     $("status").textContent = labels[state.status] || state.status;
@@ -199,11 +216,13 @@
     $("pause").hidden = !active;
     $("resume").hidden = state.status !== "paused";
     $("review").hidden = !held;
-    $("stop").hidden = !held;
+    $("stop").hidden = state.status !== "paused";
     $("clear").disabled = held || blocking || blockRequest || actorChecking;
     $("json").disabled = !state.target;
     $("csv").disabled = !state.target;
     $("diagnostics").disabled = !state.target && !blockJob;
+    $("tools").hidden = !state.target && !blockJob;
+    $("jobSummary").hidden = !blockJob; $("jobDetails").hidden = !blockJob;
     const selected = new Set(state.blockSelection || []), query = $("search").value.trim().toLowerCase();
     const rows = state.accounts.filter(a => `${a.username} ${a.label}`.toLowerCase().includes(query));
     const pages = Math.max(1, Math.ceil(rows.length / 100)); listPage = Math.min(listPage, pages - 1);
@@ -248,10 +267,18 @@
     $("blockPause").hidden = blockJob?.status !== "running";
     $("blockResume").hidden = blockJob?.status !== "paused";
     $("blockStop").hidden = !blocking;
-    $("blockExport").disabled = !blockJob;
+    $("blockExport").disabled = !blockJob; $("blockExport").hidden = !blockJob;
+    $("json").hidden = !state.target; $("csv").hidden = !state.target; $("clear").hidden = !state.target;
+    if (blocking) clearRequired("blockConfirmed");
     const names = { running: "封鎖執行中", paused: "封鎖已暫停", stopped: "封鎖已中止", completed: "佇列已處理完畢（請核對逐筆結果）" };
     const statuses = { pending: "等待", "in-progress": "處理中", success: "封鎖成功", "already-blocked": "已封鎖，略過", skipped: "略過", failed: "失敗", unknown: "結果不明", "needs-attention": "需人工檢查", cancelled: "已取消" };
     $("blockStatus").textContent = blockJob ? `${names[blockJob.status] || blockJob.status} · ${blockJob.items.filter(a => !["pending", "in-progress"].includes(a.status)).length}/${blockJob.items.length} · 登入 @${blockJob.actorUsername}${blockJob.parallelBatch ? ` · 背景並行 ${(blockJob.activeUsernames || []).length}/${blockJob.concurrency || blockJob.items.length}${blockJob.activeUsernames?.length ? "：@" + blockJob.activeUsernames.join("、@") : ""}` : blockJob.current ? ` · 目前 @${blockJob.current}` : ""}${blockJob.extensionVersion ? `\n工作版本：${blockJob.extensionVersion}${blockJob.extensionVersion !== RUNTIME_VERSION ? "（舊工作紀錄）" : ""}` : ""}\n來源：${blockJob.target.url}\n${blockJob.reason || ""}` : "尚無封鎖工作";
+    if (blockJob) {
+      const success = blockJob.items.filter(a => ['success','already-blocked'].includes(a.status)).length;
+      const unresolved = blockJob.items.filter(a => ['failed','unknown','needs-attention'].includes(a.status)).length;
+      const cancelled = blockJob.items.filter(a => a.status === 'cancelled').length;
+      $("jobSummary").textContent = `${names[blockJob.status] || blockJob.status}\n已確認封鎖 ${success} / ${blockJob.items.length}${unresolved ? ` · ${unresolved} 個需檢查` : ''}${cancelled ? ` · ${cancelled} 個已取消` : ''}${blockJob.status === 'running' ? `\n正在處理 ${(blockJob.activeUsernames || (blockJob.current ? [blockJob.current] : [])).length} 個帳號` : ''}`;
+    }
     const resultList = $("blockResults"); resultList.replaceChildren();
     if (blockJob) for (const item of blockJob.items.filter(a => a.status !== "pending").slice(-100)) {
       const row = document.createElement("div"); row.className = "account"; row.textContent = `@${item.username}${item.role === "author" ? "（作者）" : ""}：${statuses[item.status] || item.status}`;
@@ -376,7 +403,7 @@
   $("start").onclick = () => {
     const target = Core.canonicalTarget($("target").value);
     if (!target) return notice("尚未辨識目標。請按「更換目標」，再點正文或時間。");
-    if (!$("scopeConfirmed").checked) return notice("請先勾選目標與橘框名單的確認。");
+    if (!requireConfirmation("scopeConfirmed", "請勾選上方「已核對目標與橘框名單」，再開始收集。")) return;
     if (!validScope()) return notice("名單區域已失效或頁面已改變，請重新選擇。");
     if (state.target && !confirm("開始新收集將取代上一份本機紀錄。確定已匯出需要保留的資料？")) return;
     state = freshState(); changeRevision = 0; listPage = 0; scanCursor = 0; $("includeAuthor").checked = false; $("blockConfirmed").checked = false;
@@ -452,7 +479,8 @@
   }
   $("refreshActor").onclick = refreshActor;
   async function startBlocking(probeRequest = false, directRequestTest = false, parallelBatch = false) {
-    if (!state.target || !$("blockConfirmed").checked) return notice("請先檢查完整名單並勾選封鎖確認。");
+    if (!state.target) return notice("請先收集並檢查名單。");
+    if (!requireConfirmation("blockConfirmed", "請勾選上方「我已檢查勾選名單」的封鎖確認，再開始封鎖。")) return;
     if (actorChecking || blockRequest) return;
     const previousActor = detectedActor, target = JSON.parse(JSON.stringify(state.target)), sourcePage = pageIdentity();
     const selected = new Set(state.blockSelection), accounts = state.accounts.filter(a => selected.has(a.username.toLowerCase()) && a.username.toLowerCase() !== previousActor.toLowerCase()).map(account => ({ ...account }));
