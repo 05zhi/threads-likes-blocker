@@ -3,6 +3,7 @@ VERIFICATION.md
 evidence/
 work/
 node_modules/
+__pycache__/
 *.zip
 threads-likes-*.json
 threads-likes-*.csv
