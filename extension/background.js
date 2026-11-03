@@ -1,7 +1,7 @@
 /* Only an explicit panel command starts a blocking job. */
 importScripts("core.js", "job.js");
 const Core = globalThis.ThreadsProbeCore, Jobs = globalThis.ThreadsBlockJob;
-const BUILD_VERSION = "0.4.4";
+const BUILD_VERSION = "0.4.5";
 const JOB_KEY = "threadsBlocker.job.v1";
 let job = null, runner = null, serial = Promise.resolve(), workerOwnership = null;
 const openingTabs = new Set();
@@ -198,7 +198,7 @@ async function run() {
       await mutate(async () => {
         if (job?.id === taskId && job.current === username) { job = Jobs.recordResult(job, username, result, now()); job.phase = null; await save(); }
       });
-      if (job.status === "running") await wait(1500);
+      if (job.status === "running") await wait(3000);
     }
   } catch (error) {
     await mutate(async () => { if (job?.id === taskId) { job = Jobs.recover(job, now()); job.reason = `工作中斷：${error.message}`; await save(); } });

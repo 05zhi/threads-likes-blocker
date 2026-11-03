@@ -38,21 +38,34 @@ function fixture(options={}){
   doc.append(nav.append(actor),main.append(profileHeader,article.append(new Element('a',{href:'/@victim/post/POST'},'victim post'),new Element('button',{'aria-label':'More'}))));
   let location='https://www.threads.com/@victim',time=0,finalClicks=0,menuClicks=0,optionClicks=0;
   let dialog=null,confirmButton=null;
+  const scheduled=[],timings={};
+  const schedule=(ms,fn)=>scheduled.push({at:time+ms,fn});
   more.onClick=()=>{
-    menuClicks++;
+    menuClicks++;timings.more=time;
+    const renderMenu=()=>{
     const menu=new Element('div',options.roleless?{}:{role:options.actionsRole||'menu'},options.actionsText||''),option=new Element('button',{role:'menuitem'},options.unblockMenu?'Unblock':'Block');doc.append(menu.append(option));
     if((options.actionsRole==='dialog'||options.roleless)&&!options.noOtherAction)menu.append(new Element('button',{},'Mute'));
     if(options.zeroSizedMenu)menu.getBoundingClientRect=()=>({left:0,top:0,width:0,height:0});
     if(options.extraPopup)doc.append(new Element('div',{role:'menu'}).append(new Element('button',{},'Copy link')));
     if(options.secondBlockGroup)doc.append(new Element('div').append(new Element('button',{},'Block'),new Element('button',{},'Report')));
     if(options.menuInFeed){menu.remove();article.append(menu);}
+    const optionCreatedAt=time,optionTop=option.top;
+    if(options.movingOptionMs)option.getBoundingClientRect=()=>({left:10,top:optionTop+Math.max(0,options.movingOptionMs-(time-optionCreatedAt))/10,width:160,height:20});
+    if(options.disabledOptionMs){option.disabled=true;schedule(options.disabledOptionMs,()=>{option.disabled=false;});}
     option.onClick=()=>{
-      optionClicks++;menu.remove();dialog=new Element('div',{role:'dialog'},options.mention??'Block @victim?');
+      optionClicks++;timings.option=time;menu.remove();
+      const renderDialog=()=>{
+      dialog=new Element('div',{role:'dialog'},options.mention??'Block @victim?');
       confirmButton=new Element('button',{},'Block');dialog.append(confirmButton);
       if(options.ambiguous)dialog.append(new Element('button',{},'Block'));
       doc.append(dialog);
-      confirmButton.onClick=()=>{finalClicks++;dialog.remove();if(options.barrierAfterClick)doc.append(new Element('div',{role:'alert'},'Try again later'));else if(options.verify!==false){const row=options.siblingUnblock?actionRow:header;row.append(new Element('button',{},'Unblock'));if(options.duplicateUnblock)row.append(new Element('button',{},'Unblock'));}};
+      if(options.disabledConfirmMs){confirmButton.disabled=true;schedule(options.disabledConfirmMs,()=>{confirmButton.disabled=false;});}
+      confirmButton.onClick=()=>{finalClicks++;timings.final=time;dialog.remove();if(options.barrierAfterClick)doc.append(new Element('div',{role:'alert'},'Try again later'));else if(options.verify!==false){const row=options.siblingUnblock?actionRow:header;row.append(new Element('button',{},'Unblock'));if(options.duplicateUnblock)row.append(new Element('button',{},'Unblock'));}};
+      };
+      if(options.dialogDelay)schedule(options.dialogDelay,renderDialog);else renderDialog();
     };
+    };
+    if(options.menuDelay)schedule(options.menuDelay,renderMenu);else renderMenu();
   };
   if(options.alreadyBlocked)(options.siblingUnblock?actionRow:header).append(new Element('button',{},'Unblock'));
   if(options.withoutMore)more.remove();
@@ -61,10 +74,55 @@ function fixture(options={}){
   if(options.feedOnly){more.remove();identity.remove();article.append(new Element('h2',{},'victim'));}
   if(options.hydrateHeader)header.remove();
   if(options.hydrateActor)actor.remove();
-  const adapter=Adapter.createAdapter({document:doc,href:()=>location,getComputedStyle:()=>({}),now:()=>time,delay:async ms=>{time+=ms;if(time>=600){if(options.hydrateHeader&&!header.isConnected&&!options.neverHydrate)main.append(header);if(options.hydrateActor&&!actor.isConnected)nav.append(actor);if(options.changeActorDuringHydration)actor.attrs.href='/@someone_else';}},token:()=>`nonce-${time}`});
+  const adapter=Adapter.createAdapter({document:doc,href:()=>location,getComputedStyle:element=>options.style?.(element,time)||{},now:()=>time,delay:async ms=>{time+=ms;for(const task of [...scheduled])if(task.at<=time){scheduled.splice(scheduled.indexOf(task),1);task.fn();}options.onDelay?.({doc,time});if(time>=600){if(options.hydrateHeader&&!header.isConnected&&!options.neverHydrate)main.append(header);if(options.hydrateActor&&!actor.isConnected)nav.append(actor);if(options.changeActorDuringHydration)actor.attrs.href='/@someone_else';}},token:()=>`nonce-${time}`});
   const args={username:'victim',actorUsername:'owner'};
-  return {doc,nav,actor,main,article,header,profileHeader,actionRow,more,identity,adapter,args,get dialog(){return dialog;},get confirmButton(){return confirmButton;},get elapsed(){return time;},counts:()=>({finalClicks,menuClicks,optionClicks}),setLocation:value=>{location=value;}};
+  return {doc,nav,actor,main,article,header,profileHeader,actionRow,more,identity,adapter,args,timings,get dialog(){return dialog;},get confirmButton(){return confirmButton;},get elapsed(){return time;},counts:()=>({finalClicks,menuClicks,optionClicks}),setLocation:value=>{location=value;}};
 }
+
+test('slow menus and dialogs wait for enabled stable controls and do not double-click',async()=>{
+  const f=fixture({menuDelay:5500,dialogDelay:5500,movingOptionMs:1600,disabledConfirmMs:900});
+  const p=await f.adapter.perform({...f.args,phase:'prepare'});
+  assert.equal(p.status,'prepared');assert.equal(f.counts().finalClicks,0);
+  const r=await f.adapter.perform({...f.args,phase:'confirm',confirmationToken:p.confirmationToken});
+  assert.equal(r.status,'success');assert.deepEqual(f.counts(),{menuClicks:1,optionClicks:1,finalClicks:1});
+  assert.ok(f.timings.more>=900);assert.ok(f.timings.option-f.timings.more>=5500+1600+650);
+  assert.ok(f.timings.final-f.timings.option>=5500+900+650);
+});
+
+test('quickly mounted controls still have a settling interval before each action',async()=>{
+  const f=fixture(),p=await f.adapter.perform({...f.args,phase:'prepare'});
+  await f.adapter.perform({...f.args,phase:'confirm',confirmationToken:p.confirmationToken});
+  assert.ok(f.timings.more>=900);assert.ok(f.timings.option-f.timings.more>=900);assert.ok(f.timings.final-f.timings.option>=900);
+});
+
+test('fade-in ancestors and temporary overlays must clear before the stability interval starts',async()=>{
+  const faded=fixture({style:(element,time)=>({opacity:element.tagName==='MAIN'&&time<1800?'0.4':'1'})});
+  assert.equal((await faded.adapter.perform({...faded.args,phase:'prepare'})).status,'prepared');assert.ok(faded.timings.more>=1800+650);
+  const covered=fixture({onDelay:({doc,time})=>{if(time>=1300)doc.hitOverride=null;}});covered.doc.hitOverride=new Element('div');
+  assert.equal((await covered.adapter.perform({...covered.args,phase:'prepare'})).status,'prepared');assert.ok(covered.timings.more>=1300+650);
+});
+
+test('a perpetually moving control times out without trying a click',async()=>{
+  const f=fixture();f.more.getBoundingClientRect=()=>({left:10,top:100+f.elapsed/10,width:160,height:20});
+  const result=await f.adapter.perform({...f.args,phase:'prepare'});
+  assert.equal(result.status,'needs-attention');assert.ok(f.elapsed>=12000&&f.elapsed<12500);assert.equal(f.counts().menuClicks,0);
+});
+
+test('leaving the foreground during the settling delay cancels before the first click',async()=>{
+  const f=fixture({onDelay:({doc})=>{doc.visibilityState='hidden';}});
+  const result=await f.adapter.perform({...f.args,phase:'prepare'});
+  assert.equal(result.status,'deferred');assert.equal(f.counts().menuClicks,0);assert.equal(result.evidence.finalActionAttempted,false);
+});
+
+test('a final button that moved or was replaced after readiness is never clicked',async()=>{
+  for(const change of ['move','replace','disable']){
+    const f=fixture(),p=await f.adapter.perform({...f.args,phase:'prepare'});
+    if(change==='move')f.confirmButton.top+=20;
+    if(change==='replace'){f.confirmButton.remove();f.dialog.append(new Element('button',{},'Block'));}
+    if(change==='disable')f.confirmButton.disabled=true;
+    assert.equal((await f.adapter.perform({...f.args,phase:'confirm',confirmationToken:p.confirmationToken})).status,'needs-attention');assert.equal(f.counts().finalClicks,0);
+  }
+});
 
 test('profile URLs accept only exact HTTPS Threads profiles',()=>{
   assert.equal(Adapter.profileUsernameFromUrl('https://www.threads.com/@a.b_1/'),'a.b_1');

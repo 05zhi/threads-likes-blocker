@@ -65,24 +65,28 @@ async function run() {
       await check(`${name}: column title and feed controls cannot replace a removed header`,async()=>{
         await cdp.eval(`document.querySelector('#profile-header').remove()`);assert.equal((await cdp.eval('fixtureAdapter.inspect(fixtureArgs)')).profileHeaderCandidateCount,0);assert.equal(await cdp.eval('fixtureClicks'),0);
       });
-      for(const mode of ['roleless','zero-box-menu','unrelated-popup','animation-frame']) {
+      for(const mode of ['roleless','zero-box-menu','unrelated-popup','animation-frame','slow-transition']) {
         await check(`${name}: full prepare/confirm handles ${mode} account actions`,async()=>{
           await cdp.eval(`document.open();document.write(${JSON.stringify(html)});document.close();
             globalThis.fixtureAdapter=ThreadsBlockAdapter.createAdapter({document,href:()=>${JSON.stringify('https://www.threads.com/@'+username)},token:()=>'isolated-fixture-token'});
             globalThis.fixtureArgs={username:${JSON.stringify(username)},actorUsername:'owner'};
-            globalThis.finalClicks=0;
+            globalThis.finalClicks=0;globalThis.actionTimes={};
             fixtureAdapter.profileScope(fixtureArgs.username).menu.addEventListener('click',()=>{
+              actionTimes.more=performance.now();
               const renderActions=()=>{
               const portal=document.createElement('div');portal.style.cssText='position:fixed;top:30px;right:30px;z-index:100;background:white;padding:24px';
               const group=document.createElement('div');
               if(${JSON.stringify(mode)}==='zero-box-menu'){group.setAttribute('role','menu');group.style.display='contents';}
               const block=document.createElement('button');block.textContent='封鎖';
               const mute=document.createElement('button');mute.textContent='噤聲';group.append(block,mute);portal.append(group);document.body.append(portal);
+              if(${JSON.stringify(mode)}==='slow-transition')portal.animate([{opacity:0,transform:'translateY(30px)'},{opacity:1,transform:'translateY(0px)'}],{duration:900,fill:'both'});
               if(${JSON.stringify(mode)}==='unrelated-popup'){const unrelated=document.createElement('div');unrelated.setAttribute('role','menu');unrelated.textContent='複製連結';portal.append(unrelated);}
               block.addEventListener('click',()=>{
+                actionTimes.option=performance.now();
                 portal.remove();const dialog=document.createElement('div');dialog.setAttribute('role','dialog');dialog.style.cssText='position:fixed;top:30px;right:30px;z-index:100;background:white;padding:24px';dialog.textContent='封鎖 '+fixtureArgs.username+'？';
                 const confirm=document.createElement('button');confirm.textContent='封鎖';dialog.append(confirm);document.body.append(dialog);
-                confirm.addEventListener('click',()=>{finalClicks++;dialog.remove();const unblock=document.createElement('button');unblock.textContent='解除封鎖';fixtureAdapter.profileScope(fixtureArgs.username).scope.append(unblock);});
+                if(${JSON.stringify(mode)}==='slow-transition'){confirm.disabled=true;setTimeout(()=>{confirm.disabled=false},1200);dialog.animate([{opacity:0},{opacity:1}],{duration:700,fill:'both'});}
+                confirm.addEventListener('click',()=>{actionTimes.final=performance.now();finalClicks++;dialog.remove();const unblock=document.createElement('button');unblock.textContent='解除封鎖';fixtureAdapter.profileScope(fixtureArgs.username).scope.append(unblock);});
               });
               };
               if(${JSON.stringify(mode)}==='animation-frame')requestAnimationFrame(renderActions);else renderActions();
@@ -92,6 +96,7 @@ async function run() {
           assert.equal(prepared.evidence.diagnostics.menuDiscovery.candidateCount,1);
           const confirmed=await cdp.eval(`fixtureAdapter.perform({...fixtureArgs,phase:'confirm',confirmationToken:fixturePrepared.confirmationToken})`);
           assert.equal(confirmed.status,'success');assert.equal(await cdp.eval('finalClicks'),1);
+          if(mode==='slow-transition'){const timings=await cdp.eval('actionTimes');assert.ok(timings.option-timings.more>=1400);assert.ok(timings.final-timings.option>=1700);}
         });
       }
     }

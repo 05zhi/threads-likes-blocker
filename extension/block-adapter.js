@@ -1,6 +1,6 @@
 (function (root) {
   "use strict";
-  if (root.ThreadsBlockAdapter?.version === 6) return;
+  if (root.ThreadsBlockAdapter?.version === 7) return;
   const USER = /^[A-Za-z0-9._]{1,30}$/;
   const HOSTS = new Set(["threads.com", "www.threads.com", "threads.net", "www.threads.net"]);
   const PROFILE_LABELS = new Set(["profile", "個人檔案", "个人主页", "個人主頁", "个人资料"]);
@@ -193,17 +193,42 @@
       if (needScope && !context) return { code: 'profile-missing', reason: "無法唯一辨識目標的個人檔案標頭與更多選單。" };
       return { actor, context };
     }
-    function safelyClick(element) {
-      if (!visible(element) || element.disabled || element.getAttribute("aria-disabled") === "true") return false;
+    function clickableRect(element) {
+      if (!visible(element) || element.disabled || element.getAttribute("aria-disabled") === "true") return null;
+      for (let node = element; node && node !== doc; node = node.parentElement) {
+        const opacity = Number.parseFloat(getStyle?.(node)?.opacity);
+        if (Number.isFinite(opacity) && opacity < 0.98) return null;
+      }
       const rect = element.getBoundingClientRect();
       const top = doc.elementFromPoint?.(rect.left + rect.width / 2, rect.top + rect.height / 2);
-      if (!top || !(top === element || element.contains(top))) return false;
+      if (!top || !(top === element || element.contains(top))) return null;
+      return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+    }
+    function sameRect(a, b) { return !!a && !!b && ['left', 'top', 'width', 'height'].every(key => Math.abs(a[key] - b[key]) <= 1); }
+    function safelyClick(element) {
+      if (!clickableRect(element)) return false;
       element.click();
       return true;
     }
-    async function waitFor(read, timeout = 5000) {
+    async function waitFor(read, timeout = 12000) {
       const end = now() + timeout;
       do { const value = read(); if (value) return value; await delay(120); } while (now() < end);
+      return null;
+    }
+    async function waitForStableControl(read) {
+      const started = now(), deadline = started + 12000;
+      let stable = null;
+      do {
+        const candidate = read();
+        if (candidate?.reason) return candidate;
+        const rect = candidate?.element ? clickableRect(candidate.element) : null;
+        if (!rect) stable = null;
+        else {
+          if (!stable || stable.element !== candidate.element || stable.scope !== candidate.scope || !sameRect(stable.rect, rect)) stable = { element: candidate.element, scope: candidate.scope, rect, since: now() };
+          if (now() - started >= 900 && now() - stable.since >= 650) return { ...candidate, rect };
+        }
+        await delay(120);
+      } while (now() < deadline);
       return null;
     }
     function targetDialog(username, previousOption = null) {
@@ -220,7 +245,7 @@
       const found = USER.test(username || '') ? profileCandidates(username) : { identities: 0, candidates: [] };
       const actor = readableActorFromNavigation(), profile = profileUsernameFromUrl(href());
       const context = found.candidates.length === 1 ? found.candidates[0] : null;
-      return { adapterVersion: 6, documentVisibility: doc.visibilityState || "unknown", stage, currentProfileUsername: profile, expectedUsername: username || null, actorUsernameDetected: actor, targetMatches: !!profile && low(profile) === low(username), actorMatches: !!actor && low(actor) === low(actorUsername), mainCount: all(doc, 'main,[role="main"]').length, identityCandidateCount: found.identities, profileHeaderCandidateCount: found.candidates.length, hasProfileMenu: !!context?.menu, menuPopup: context?.menu?.getAttribute('aria-haspopup') || null, hasUnblock: !!unblockControl(context, username), visibleDialogCount: all(doc, '[role="dialog"],dialog[open]').filter(visible).length, visibleMenuCount: all(doc, '[role="menu"]').filter(visible).length, visibleBlockControlCount: controls(doc).filter(element => matchesLabel(element, BLOCK_LABELS)).length, menuDiscovery: menuDiagnostics ? { ...menuDiagnostics } : null, barrier: barrier() };
+      return { adapterVersion: 7, documentVisibility: doc.visibilityState || "unknown", stage, currentProfileUsername: profile, expectedUsername: username || null, actorUsernameDetected: actor, targetMatches: !!profile && low(profile) === low(username), actorMatches: !!actor && low(actor) === low(actorUsername), mainCount: all(doc, 'main,[role="main"]').length, identityCandidateCount: found.identities, profileHeaderCandidateCount: found.candidates.length, hasProfileMenu: !!context?.menu, menuPopup: context?.menu?.getAttribute('aria-haspopup') || null, hasUnblock: !!unblockControl(context, username), visibleDialogCount: all(doc, '[role="dialog"],dialog[open]').filter(visible).length, visibleMenuCount: all(doc, '[role="menu"]').filter(visible).length, visibleBlockControlCount: controls(doc).filter(element => matchesLabel(element, BLOCK_LABELS)).length, menuDiscovery: menuDiagnostics ? { ...menuDiagnostics } : null, barrier: barrier() };
     }
     function result(status, username, actorUsername, reason, extra = {}) {
       const diagnostics = inspect({ username, actorUsername });
@@ -243,11 +268,19 @@
           if (unblockControl(current.context, username)) return result("already-blocked", username, actorUsername, "目標個人檔案已顯示解除封鎖。");
           if (all(doc, '[role="dialog"],dialog[open]').some(visible)) return result("needs-attention", username, actorUsername, "已有其他對話框開啟，請先關閉後重試。");
           stage = 'profile-actions';
-          const beforeMenu = new Set(controls(doc));
-          if (!current.context.menu || !safelyClick(current.context.menu)) return result("needs-attention", username, actorUsername, "目標個人檔案選單被遮擋或無法點擊。");
-          const opened = await waitFor(() => {
+          const more = await waitForStableControl(() => {
             const issue = guard(username, actorUsername); if (issue.reason) return issue;
-            return openedActionMenu(beforeMenu);
+            return { element: issue.context.menu, scope: issue.context.scope };
+          });
+          if (more?.reason) return guardResult(more);
+          if (!more) return result('needs-attention', username, actorUsername, '更多按鈕未在 12 秒內穩定顯示或可點擊，尚未操作。');
+          const beforeMenu = new Set(controls(doc));
+          if (!safelyClick(more.element)) return result("needs-attention", username, actorUsername, "目標個人檔案選單被遮擋或無法點擊。");
+          const opened = await waitForStableControl(() => {
+            const issue = guard(username, actorUsername); if (issue.reason) return issue;
+            const found = openedActionMenu(beforeMenu); if (!found) return null;
+            const choices = controls(found.menu).filter(element => matchesLabel(element, BLOCK_LABELS) || matchesLabel(element, UNBLOCK_LABELS));
+            return choices.length === 1 ? { ...found, element: choices[0], scope: found.menu } : null;
           });
           if (opened?.reason) return guardResult(opened);
           if (!opened) return result("needs-attention", username, actorUsername, `無法辨識個人檔案動作群（新出現封鎖／解除封鎖按鈕 ${menuDiagnostics?.newActionControlCount || 0}，候選群組 ${menuDiagnostics?.candidateCount || 0}）。`);
@@ -259,18 +292,21 @@
           if (current.reason) return guardResult(current);
           if (blockOptions.length !== 1 || !safelyClick(blockOptions[0])) return result("needs-attention", username, actorUsername, "無法唯一辨識或點擊封鎖選項。");
           stage = 'block-confirmation';
-          const dialog = await waitFor(() => {
+          const dialog = await waitForStableControl(() => {
             const issue = guard(username, actorUsername); if (issue.reason) return issue;
-            return targetDialog(username, blockOptions[0]);
+            const found = targetDialog(username, blockOptions[0]);
+            return found ? { ...found, element: found.button, scope: found.dialog } : null;
           });
           if (dialog?.reason) return guardResult(dialog);
           if (!dialog) return result("needs-attention", username, actorUsername, "封鎖確認視窗缺少精確目標帳號，或按鈕不唯一。");
+          current = guard(username, actorUsername);
+          if (current.reason) return guardResult(current);
           const token = env.token ? env.token() : root.crypto.randomUUID();
-          prepared = { username: low(username), actor: low(actorUsername), token, dialog: dialog.dialog, scope: current.context.scope, href: href() };
+          prepared = { username: low(username), actor: low(actorUsername), token, dialog: dialog.dialog, button: dialog.button, rect: dialog.rect, scope: current.context.scope, href: href() };
           return result("prepared", username, actorUsername, "已核對目標並開啟確認視窗，尚未送出封鎖。", { confirmationToken: token, evidence: { targetProfileUrl: href(), actorSource: "profile-navigation", targetIdentity: username, confirmationMentionsExactUsername: true } });
         }
         const dialog = targetDialog(username);
-        if (!prepared || prepared.token !== confirmationToken || prepared.username !== low(username) || prepared.actor !== low(actorUsername) || prepared.href !== href() || !dialog || dialog.dialog !== prepared.dialog || current.context.scope !== prepared.scope) return result("needs-attention", username, actorUsername, "確認授權或頁面上下文已失效，必須重新準備。");
+        if (!prepared || prepared.token !== confirmationToken || prepared.username !== low(username) || prepared.actor !== low(actorUsername) || prepared.href !== href() || !dialog || dialog.dialog !== prepared.dialog || dialog.button !== prepared.button || !sameRect(clickableRect(dialog.button), prepared.rect) || current.context.scope !== prepared.scope) return result("needs-attention", username, actorUsername, "確認授權或頁面上下文已失效，必須重新準備。");
         // Consume before the final click: an uncertain result may never be retried
         // with the same token and cannot accidentally toggle an unblock control.
         prepared = null; stage = 'block-submit';
@@ -279,9 +315,10 @@
         stage = 'block-verification';
         const outcome = await waitFor(() => {
           const issue = guard(username, actorUsername);
+          if (['profile-missing', 'actor-missing'].includes(issue.code)) return null;
           if (issue.reason) return { reason: issue.reason };
           return unblockControl(issue.context, username) ? { verified: true } : null;
-        }, 6000);
+        }, 12000);
         if (outcome?.verified) return result("success", username, actorUsername, "已確認目標個人檔案顯示解除封鎖。", { evidence: { verification: "target-profile-unblock-control" } });
         return result("unknown", username, actorUsername, outcome?.reason || "已送出封鎖，但沒有讀到目標已封鎖的明確狀態；不會自動重試。");
       } catch (error) {
@@ -291,7 +328,7 @@
     return Object.freeze({ perform, readableActorFromNavigation, profileScope, targetDialog, inspect });
   }
   let live;
-  const api = Object.freeze({ version: 6, profileUsernameFromUrl, exactAccessibleText, createAdapter, perform(args) { live ||= createAdapter({ document: root.document, location: root.location }); return live.perform(args); }, inspect(args) { live ||= createAdapter({ document: root.document, location: root.location }); return live.inspect(args); }, readableActorFromNavigation() { live ||= createAdapter({ document: root.document, location: root.location }); return live.readableActorFromNavigation(); } });
+  const api = Object.freeze({ version: 7, profileUsernameFromUrl, exactAccessibleText, createAdapter, perform(args) { live ||= createAdapter({ document: root.document, location: root.location }); return live.perform(args); }, inspect(args) { live ||= createAdapter({ document: root.document, location: root.location }); return live.inspect(args); }, readableActorFromNavigation() { live ||= createAdapter({ document: root.document, location: root.location }); return live.readableActorFromNavigation(); } });
   root.ThreadsBlockAdapter = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);
